@@ -67,27 +67,51 @@ def get_random_delay(min_seconds=10.0, max_seconds=30.0):
     return random.uniform(min_seconds, max_seconds)
 
 async def simulate_human_behavior(page, task_logger):
-    """Simulates scrolling and mouse movements."""
+    """Simulates scrolling and mouse movements to load dynamic content."""
     task_logger.info("Simulating human behavior (scrolling)...")
 
     # Mouse movement
     try:
         await page.mouse.move(random.randint(100, 500), random.randint(100, 500))
-        await asyncio.sleep(random.uniform(1.0, 3.0))
+        await asyncio.sleep(random.uniform(1.0, 2.0))
     except Exception as e:
         task_logger.warning(f"Mouse move failed: {e}")
 
-    # Scroll logic
+    # Scroll down gradually to trigger lazy loading of engagement section
     try:
-        for _ in range(random.randint(2, 4)):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(random.uniform(2.0, 5.0))
-            # Scroll up a bit sometimes
-            if random.random() > 0.7:
-                 await page.evaluate("window.scrollBy(0, -300)")
-                 await asyncio.sleep(random.uniform(1.0, 3.0))
+        # First scroll slowly through the page
+        for i in range(5):
+            await page.evaluate(f"window.scrollBy(0, {300 + i * 100})")
+            await asyncio.sleep(random.uniform(1.5, 3.0))
+        
+        # Scroll to bottom
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await asyncio.sleep(3)
+        
+        # Scroll back up to the engagement section area
+        await page.evaluate("window.scrollTo(0, 0)")
+        await asyncio.sleep(2)
+        await page.evaluate("window.scrollBy(0, 600)")
+        await asyncio.sleep(3)
     except Exception as e:
         task_logger.warning(f"Scroll failed: {e}")
+    
+    # Try to close any login popup/overlay that might block content
+    try:
+        close_selectors = [
+            "div[aria-label='Close']", "div[aria-label='Cerrar']",
+            "[aria-label='Close']", "[aria-label='Cerrar']",
+            "i.x1b0d499",  # Facebook close icon class
+        ]
+        for sel in close_selectors:
+            btn = page.locator(sel)
+            if await btn.count() > 0:
+                task_logger.info(f"Found close button ({sel}), clicking...")
+                await btn.first.click()
+                await asyncio.sleep(2)
+                break
+    except:
+        pass
 
 async def send_webhook(data: Dict[str, Any], task_logger):
     """Sends the result to the n8n webhook."""
@@ -357,6 +381,17 @@ async def run_scraper(task_id: str, url: str):
             }""")
             
             task_logger.info(f"JS extraction found: {len(js_data.get('aria_labels', []))} aria-labels, {len(js_data.get('engagement_texts', []))} engagement texts, {len(js_data.get('button_texts', []))} button texts")
+            
+            # DEBUG: Log what we actually found for diagnosis
+            for label in js_data.get("aria_labels", []):
+                if any(kw in label.lower() for kw in ['gusta', 'encanta', 'comenta', 'compartid', 'visual', 'reacci', 'reaction', 'comment', 'share', 'view', 'persona']):
+                    task_logger.info(f"  ARIA-LABEL: {label[:120]}")
+            for text in js_data.get("engagement_texts", []):
+                if any(kw in text.lower() for kw in ['comenta', 'compartid', 'visual', 'reaction', 'reacci', 'view', 'mil']):
+                    task_logger.info(f"  ENGAGEMENT-TEXT: {text[:120]}")
+            for text in js_data.get("button_texts", []):
+                if any(kw in text.lower() for kw in ['comenta', 'compartid', 'visual', 'reacci', 'reaction', 'view', 'mil']):
+                    task_logger.info(f"  BUTTON-TEXT: {text[:120]}")
             
             # Parse aria-labels for engagement data
             # Facebook ES format: "Me gusta: 263 personas", "Me encanta: 20 personas"
