@@ -161,9 +161,28 @@ async def run_scraper(task_id: str, url: str):
         
         task_logger.info(f"Using UA: {user_agent[:50]}... Viewport: {viewport}")
 
+        # Proxy configuration (if provided)
+        proxy_config = None
+        proxy_host = os.getenv("PROXY_HOST")
+        proxy_port = os.getenv("PROXY_PORT")
+        proxy_user = os.getenv("PROXY_USERNAME")
+        proxy_pass = os.getenv("PROXY_PASSWORD")
+        
+        if proxy_host and proxy_port:
+            proxy_config = {
+                "server": f"http://{proxy_host}:{proxy_port}",
+            }
+            if proxy_user and proxy_pass:
+                proxy_config["username"] = proxy_user
+                proxy_config["password"] = proxy_pass
+            task_logger.info(f"Using proxy: {proxy_host}:{proxy_port}")
+        else:
+            task_logger.warning("No proxy configured - may be blocked by Cloudflare")
+
         context = await browser.new_context(
             user_agent=user_agent,
             viewport=viewport,
+            proxy=proxy_config,
             locale="en-US",
             timezone_id="America/New_York",
             device_scale_factor=random.choice([1, 1.5, 2]),
