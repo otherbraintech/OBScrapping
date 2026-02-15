@@ -18,6 +18,15 @@ curl -X POST http://YOUR_SERVER_IP:8000/scrape \
 
 _> **Note:** Replace `YOUR_SERVER_IP` with your actual local IP (e.g., `192.168.1.x`) if calling from outside localhost, or `host.docker.internal` if n8n is also in Docker._
 
+## 🌍 EasyPanel / Deployed URL
+
+When deployed on EasyPanel, you will get a public domain (e.g., `https://obscrapping.tuservidor.com`).
+
+**Your n8n Configuration:**
+
+- **URL:** `https://obscrapping.tuservidor.com/scrape`
+  _(Replace `obscrapping.tuservidor.com` with the domain shown in your EasyPanel dashboard)_
+
 ## ⚡ n8n "HTTP Request" Node Setup
 
 If you are building a workflow in n8n, configure the **HTTP Request** node as follows:
