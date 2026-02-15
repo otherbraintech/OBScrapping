@@ -5,6 +5,7 @@ import uuid
 import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -204,109 +205,179 @@ async def run_scraper(task_id: str, url: str):
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
 
-        # Parsing Logic
+        # ===== PARSING LOGIC =====
         task_logger.info("Parsing page content...")
         scraped_data = {}
 
-        # 1. Caption / Text
-        # Often in div[dir="auto"] inside the post container
-        try:
-            # Try specific selectors first
-            caption_el = page.locator("div[data-ad-preview='message']").first
-            if await caption_el.count() == 0:
-                 caption_el = page.locator("span[dir='auto']").first # Fallback
-            
-            if await caption_el.count() > 0:
-                scraped_data["caption"] = await caption_el.text_content()
-            else:
-                 # Last resort regex or broad search
-                scraped_data["caption"] = None
-        except Exception as e:
-            task_logger.warning(f"Error extracting caption: {e}")
+        # --- LAYER 1: OG Meta Tags (most reliable) ---
+        task_logger.info("Extracting OG meta tags...")
+        og_tags = [
+            "og:title", "og:description", "og:image", "og:url",
+            "og:video", "og:video:url", "og:video:secure_url",
+            "og:video:type", "og:video:width", "og:video:height",
+            "og:type", "og:site_name"
+        ]
+        for tag in og_tags:
+            try:
+                el = page.locator(f'meta[property="{tag}"]')
+                if await el.count() > 0:
+                    value = await el.first.get_attribute("content")
+                    key = tag.replace(":", "_").replace(".", "_")
+                    scraped_data[key] = value
+            except Exception as e:
+                task_logger.warning(f"Error reading {tag}: {e}")
 
-        # 2. Reactions / Likes
-        # Try finding aria-label with "reactions" or "likes"
+        # Also grab standard meta description
         try:
-            # Look for common reaction 
-            reactions_el = page.locator("span[role='toolbar']").first
-            if await reactions_el.count() == 0:
-                 # Check for the reaction summary line like "John Doe and 1.2K others"
-                reactions_el = page.locator("div[aria-label*='reaction']").first
-
-            # If that fails, try looking for the number
-            if await reactions_el.count() > 0:
-                scraped_data["reactions_raw"] = await reactions_el.text_content()
-            else: 
-                # Sometimes just a plain number next to an emoji
-                pass 
-                
-            # Try to get numeric count specifically if possible (very hard on dynamic FB)
-        except Exception as e:
-            task_logger.warning(f"Error extracting reactions: {e}")
-
-        # 3. Shares
-        try:
-             # Iterate through spans/divs that might contain 'shares'
-            shares_el = page.get_by_text("shares", exact=False).first
-            if await shares_el.count() > 0:
-                scraped_data["shares_raw"] = await shares_el.text_content()
+            meta_desc = page.locator('meta[name="description"]')
+            if await meta_desc.count() > 0:
+                scraped_data["meta_description"] = await meta_desc.first.get_attribute("content")
         except:
             pass
 
-        # 4. Comments Count
+        # --- LAYER 2: Page title ---
         try:
-            comments_el = page.get_by_text("comments", exact=False).first
-            if await comments_el.count() > 0:
-                scraped_data["comments_count_raw"] = await comments_el.text_content()
+            scraped_data["page_title"] = await page.title()
         except:
             pass
 
-        # 5. Username / Page Name
-        try:
-            # Usually h2 or h3 or strong tag
-            # Or inside an anchor tag that looks like a profile link
-            # For Reels specifically, it might be different
-            
-            # Common pattern: h3 > span > a
-            user_el = page.locator("h3 a, h2 a, span > a[role='link']").first
-            # Filter out generic links like "Privacy"
-            if await user_el.count() > 0:
-                scraped_data["username"] = await user_el.text_content()
-                scraped_data["user_link"] = await user_el.get_attribute("href")
-        except Exception as e:
-            task_logger.warning(f"Error extracting username: {e}")
+        # --- LAYER 3: Dynamic content from page text ---
+        page_text = await page.inner_text("body")
 
-        # 6. Date
+        # Extract engagement numbers using regex patterns
+        # Reactions/Likes
         try:
-            # Often an anchor with an aria-label containing the time or role="link" with hovercard
-            # Or simplified: look for 'abbr' or 'time' tags, though FB uses complex layouts
-            # Best bet: look for the timestamp link (often just below username)
-            # It usually has the permalink as href
-            
-            # Locate all links and filter for ones that look like timestamps (short text, relative time)
-            # This is hard to pinpoint, so we might skip or grab first potential match
-            pass
+            patterns_reactions = [
+                r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones)',
+                r'([\d,.]+[KMkm]?)\s*(?:likes?|me gusta)',
+                r'([\d,.]+[KMkm]?)\s*(?:people reacted|personas reaccionaron)',
+            ]
+            for pattern in patterns_reactions:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    scraped_data["reactions"] = match.group(1)
+                    break
         except:
-             pass
+            pass
 
-        # 7. Video Source (if Reel)
+        # Shares
+        try:
+            patterns_shares = [
+                r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)',
+                r'([\d,.]+[KMkm]?)\s*(?:times shared)',
+            ]
+            for pattern in patterns_shares:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    scraped_data["shares"] = match.group(1)
+                    break
+        except:
+            pass
+
+        # Comments
+        try:
+            patterns_comments = [
+                r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)',
+            ]
+            for pattern in patterns_comments:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    scraped_data["comments"] = match.group(1)
+                    break
+        except:
+            pass
+
+        # Views
+        try:
+            patterns_views = [
+                r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones)',
+                r'([\d,.]+[KMkm]?)\s*(?:plays?)',
+            ]
+            for pattern in patterns_views:
+                match = re.search(pattern, page_text, re.IGNORECASE)
+                if match:
+                    scraped_data["views"] = match.group(1)
+                    break
+        except:
+            pass
+
+        # --- LAYER 4: DOM element fallbacks ---
+        # Caption from visible text (if OG description didn't capture it)
+        if not scraped_data.get("og_description"):
+            try:
+                caption_selectors = [
+                    "div[data-ad-preview='message']",
+                    "div[data-ad-comet-preview='message']",
+                    "div[dir='auto'][style*='text-align']",
+                ]
+                for sel in caption_selectors:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        text = await el.text_content()
+                        if text and len(text.strip()) > 5:
+                            scraped_data["caption"] = text.strip()
+                            break
+            except:
+                pass
+
+        # Username / Page Name
+        try:
+            user_selectors = [
+                "h2 a[role='link']",
+                "h3 a[role='link']",
+                "strong a[role='link']",
+                "h2 a", "h3 a",
+                "a[aria-label][role='link'] strong",
+            ]
+            for sel in user_selectors:
+                el = page.locator(sel).first
+                if await el.count() > 0:
+                    text = await el.text_content()
+                    if text and len(text.strip()) > 1 and text.strip().lower() not in ["facebook", "log in", "sign up", "privacy"]:
+                        scraped_data["username"] = text.strip()
+                        href = await el.get_attribute("href")
+                        if href:
+                            scraped_data["user_link"] = href
+                        break
+        except:
+            pass
+
+        # Video element
         try:
             video_el = page.locator("video").first
             if await video_el.count() > 0:
-                scraped_data["video_src"] = await video_el.get_attribute("src")
-                scraped_data["thumbnail"] = await video_el.get_attribute("poster")
-        except:
-            pass
-            
-        # 8. Views
-        try:
-             views_el = page.get_by_text("views", exact=False).first
-             if await views_el.count() > 0:
-                 scraped_data["views_raw"] = await views_el.text_content()
+                src = await video_el.get_attribute("src")
+                poster = await video_el.get_attribute("poster")
+                if src:
+                    scraped_data["video_src"] = src
+                if poster:
+                    scraped_data["thumbnail"] = poster
         except:
             pass
 
-        result["data"] = scraped_data
+        # Build clean result
+        # Use OG data as primary, fill gaps with DOM data
+        final_data = {
+            "title": scraped_data.get("og_title") or scraped_data.get("page_title"),
+            "description": scraped_data.get("og_description") or scraped_data.get("meta_description") or scraped_data.get("caption"),
+            "image": scraped_data.get("og_image"),
+            "video_url": scraped_data.get("og_video_secure_url") or scraped_data.get("og_video_url") or scraped_data.get("og_video") or scraped_data.get("video_src"),
+            "video_type": scraped_data.get("og_video_type"),
+            "username": scraped_data.get("username"),
+            "user_link": scraped_data.get("user_link"),
+            "reactions": scraped_data.get("reactions"),
+            "shares": scraped_data.get("shares"),
+            "comments": scraped_data.get("comments"),
+            "views": scraped_data.get("views"),
+            "thumbnail": scraped_data.get("og_image") or scraped_data.get("thumbnail"),
+            "canonical_url": scraped_data.get("og_url"),
+            "content_type": scraped_data.get("og_type"),
+            "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_")},
+        }
+        # Remove None values for cleaner output
+        final_data = {k: v for k, v in final_data.items() if v is not None}
+
+        result["data"] = final_data
         result["status"] = "success"
         
         task_logger.info("Scraping completed successfully.")
