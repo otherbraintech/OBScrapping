@@ -21,7 +21,9 @@ from playwright_stealth import stealth_async
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 if not WEBHOOK_URL:
     logging.warning("WEBHOOK_URL not set. App will run but webhook notifications will be skipped.")
-WEBHOOK_INCLUDE_EXTRACTED = os.getenv("WEBHOOK_INCLUDE_EXTRACTED", "0") == "1"
+# Default to including extracted_data so n8n always receives everything we captured.
+# Can be disabled by setting WEBHOOK_INCLUDE_EXTRACTED=0
+WEBHOOK_INCLUDE_EXTRACTED = os.getenv("WEBHOOK_INCLUDE_EXTRACTED", "1") == "1"
 WEBHOOK_EXTRACTED_MAX_LIST_ITEMS = int(os.getenv("WEBHOOK_EXTRACTED_MAX_LIST_ITEMS", "200"))
 WEBHOOK_EXTRACTED_MAX_STR_LEN = int(os.getenv("WEBHOOK_EXTRACTED_MAX_STR_LEN", "2000"))
 USER_AGENTS = [
@@ -49,6 +51,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("fb_scraper")
 logger.setLevel(logging.INFO)
+
+logger.info(
+    f"Webhook extracted_data enabled={WEBHOOK_INCLUDE_EXTRACTED} "
+    f"max_list_items={WEBHOOK_EXTRACTED_MAX_LIST_ITEMS} max_str_len={WEBHOOK_EXTRACTED_MAX_STR_LEN}"
+)
 
 # --- Models ---
 class ScrapeRequest(BaseModel):
