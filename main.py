@@ -195,6 +195,73 @@ async def run_scraper(task_id: str, url: str):
         # Apply stealth
         await stealth_async(page)
         
+        # Inject Facebook cookies if provided (works with proxy for logged-in access)
+        fb_c_user = os.getenv("FB_COOKIE_C_USER")
+        fb_xs = os.getenv("FB_COOKIE_XS")
+        fb_datr = os.getenv("FB_COOKIE_DATR")  # Critical for device fingerprinting
+        fb_fr = os.getenv("FB_COOKIE_FR")      # Facebook request token
+        fb_sb = os.getenv("FB_COOKIE_SB")      # Secure browsing token
+        
+        if fb_c_user and fb_xs:
+            task_logger.info("Facebook cookies found, injecting into browser context...")
+            cookies = [
+                {
+                    "name": "c_user",
+                    "value": fb_c_user,
+                    "domain": ".facebook.com",
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True,
+                    "sameSite": "None"
+                },
+                {
+                    "name": "xs",
+                    "value": fb_xs,
+                    "domain": ".facebook.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None"
+                }
+            ]
+            
+            # Add optional but important cookies
+            if fb_datr:
+                cookies.append({
+                    "name": "datr",
+                    "value": fb_datr,
+                    "domain": ".facebook.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None"
+                })
+            if fb_fr:
+                cookies.append({
+                    "name": "fr",
+                    "value": fb_fr,
+                    "domain": ".facebook.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None"
+                })
+            if fb_sb:
+                cookies.append({
+                    "name": "sb",
+                    "value": fb_sb,
+                    "domain": ".facebook.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True,
+                    "sameSite": "None"
+                })
+            
+            await context.add_cookies(cookies)
+            task_logger.info(f"Injected {len(cookies)} Facebook cookies successfully.")
+        else:
+            task_logger.warning("No Facebook cookies configured. Scraping as anonymous user (limited data).")
+        
         # Navigate
         task_logger.info("Navigating to page...")
         try:
