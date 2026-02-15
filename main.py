@@ -355,6 +355,7 @@ async def run_scraper(task_id: str, url: str):
             "og:video:type", "og:video:width", "og:video:height",
             "og:type", "og:site_name"
         ]
+        og_found_count = 0
         for tag in og_tags:
             try:
                 el = page.locator(f'meta[property="{tag}"]')
@@ -362,8 +363,12 @@ async def run_scraper(task_id: str, url: str):
                     value = await el.first.get_attribute("content")
                     key = tag.replace(":", "_").replace(".", "_")
                     scraped_data[key] = value
+                    og_found_count += 1
+                    task_logger.info(f"Found OG tag {tag}: {value[:100]}...")
             except Exception as e:
                 task_logger.warning(f"Error reading {tag}: {e}")
+        
+        task_logger.info(f"Found {og_found_count} OG meta tags total")
 
         # Also grab standard meta description
         try:
@@ -693,10 +698,18 @@ async def run_scraper(task_id: str, url: str):
             "user_link": scraped_data.get("user_link"),
             "canonical_url": scraped_data.get("og_url"),
             "content_type": scraped_data.get("og_type"),
-            "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_")},
+            "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]},
         }
         # Remove None values for cleaner output
         final_data = {k: v for k, v in final_data.items() if v is not None}
+        
+        # Log all scraped data for debugging
+        task_logger.info(f"Final scraped data keys: {list(scraped_data.keys())}")
+        task_logger.info(f"Final output data keys: {list(final_data.keys())}")
+        if final_data.get("raw_og_data"):
+            task_logger.info(f"Raw OG data: {final_data['raw_og_data']}")
+        else:
+            task_logger.warning("No raw_og_data found - this indicates no OG tags were extracted")
 
         result["data"] = final_data
         result["status"] = "success"

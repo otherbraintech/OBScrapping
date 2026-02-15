@@ -1,53 +1,111 @@
 # Configuración de Cookies de Facebook
 
-Para obtener datos completos de engagement (comentarios, visualizaciones), el scraper necesita acceder a Facebook como usuario logueado.
+Para obtener datos completos de engagement (incluyendo comentarios y visualizaciones en el futuro), el scraper puede usar cookies de Facebook para acceder como usuario logueado.
+
+## ⚠️ Importante: Requiere Proxy Residencial
+
+Las cookies de Facebook **solo funcionan con proxy residencial**. Sin proxy, Cloudflare detecta que las cookies se usan desde otra IP y bloquea la request.
+
+**Setup requerido:**
+
+1. ✅ Proxy residencial configurado (ver `proxy_setup.md`)
+2. ✅ Cookies de Facebook (esta guía)
 
 ## Paso 1: Obtener tus Cookies de Facebook
 
-1. **Abrí Facebook** en Chrome (ya logueado)
-2. Presioná **F12** para abrir DevTools
-3. Ve a la pestaña **Application** (o **Aplicación** si está en español)
-4. En el menú lateral izquierdo, expandí **Cookies** → **https://www.facebook.com**
-5. Buscá y copiá los valores de estas dos cookies:
+### Método 1: Extensión EditThisCookie (Recomendado)
+
+1. Instalá [EditThisCookie](https://chrome.google.com/webstore/detail/editthiscookie) en Chrome
+2. Abrí Facebook y logueate
+3. Hacé click en el ícono de EditThisCookie
+4. Exportá las cookies (botón de exportar)
+5. Copiá los valores de estas cookies:
    - **c_user** — Tu user ID numérico de Facebook
-   - **xs** — Token de sesión (es un string largo con caracteres especiales)
+   - **xs** — Token de sesión (string largo)
+   - **datr** — Token de dispositivo (crítico para fingerprinting)
+   - **fr** — Facebook request token
+   - **sb** — Secure browsing token
+
+### Método 2: Chrome DevTools
+
+1. Abrí Facebook en Chrome (ya logueado)
+2. Presioná **F12** para abrir DevTools
+3. Ve a la pestaña **Application** → **Cookies** → **https://www.facebook.com**
+4. Buscá y copiá los valores de las cookies mencionadas arriba
 
 ## Paso 2: Configurar en EasyPanel
 
-1. En EasyPanel, abrí tu proyecto **fb-scraper**
-2. Ve a la sección **Environment** (Variables de entorno)
-3. Agregá estas dos variables:
+En EasyPanel, abrí tu proyecto **fb-scraper** → **Environment**:
 
-   ```
-   FB_COOKIE_C_USER=<pega aquí el valor de c_user>
-   FB_COOKIE_XS=<pega aquí el valor de xs>
-   ```
+```bash
+FB_COOKIE_C_USER=100006593702977
+FB_COOKIE_XS=33%3A6NdpMUtKxa1HCg%3A2%3A1770238487%3A-1%3A-1%3A%3AAcyZ87RZa5LloAr_lyhJWkpp0lmmF7lV9S1HaLKmTgBU
+FB_COOKIE_DATR=5bGDabP7hjHkcgpOcZNmscZs
+FB_COOKIE_FR=2REgJSFJM6fzZbClW.AWdx9s8I5IUgX6yI4F39ryjMU0vs9KZsOeoKKXX9tCZSOiKvLD8.Bpkf-3..AAA.0.0.BpkgZL.AWca7SVnvac0gWXyVKRWiHarYWo
+FB_COOKIE_SB=5bGDaVcc0Te_Icgrp0SyJ92a
+```
 
-4. **Guardá** y **redesplegá** el servicio (EasyPanel debería reconstruir automáticamente)
+**Guardá** y **redesplegá** el servicio (EasyPanel debería rebuildearse automáticamente).
 
-## Paso 3: Probar
+## Paso 3: Verificar
 
-Ejecutá un nuevo scrape desde n8n. En los logs de EasyPanel deberías ver:
+En los logs de EasyPanel deberías ver:
 
 ```
 Facebook cookies found, injecting into browser context...
-Cookies injected successfully.
+Injected 5 Facebook cookies successfully.
 ```
 
-Y el resultado ahora debería incluir:
+## ⚠️ Seguridad
 
-- ✅ `comments`: "16"
-- ✅ `views`: "5,5 mil visualizaciones"
+- **NO las compartas** con nadie (son como tu contraseña)
+- Si cambiás tu contraseña de Facebook, las cookies se invalidan — necesitás obtener nuevas
+- Las cookies expiran después de 30-60 días generalmente
+- **NO las commitees** al repositorio Git — solo como env vars
 
-## ⚠️ Importante — Seguridad
+## Datos Disponibles
 
-- **No compartas estas cookies** con nadie (son como tu contraseña)
-- Si cambiás tu contraseña de Facebook, tenés que obtener nuevas cookies
-- Las cookies expiran después de 30-60 días generalmente — si el scraper deja de funcionar, actualizá las cookies
+### Con Proxy + Cookies ✅
 
-## Opcional: Scraping sin Cookies
+- Autor
+- Caption completo
+- Reacciones
+- Shares
+- Imagen/thumbnail
+- URL canónica
+- _Potencialmente_ comentarios y vistas (si Facebook no pide checkpoint)
 
-Si no configurás las cookies, el scraper funciona igual pero con datos limitados:
+### Sin Cookies (Solo Proxy) ⚠️
 
-- ✅ Autor, caption, reacciones (del OG title), shares, imagen, thumbnail
-- ❌ No: comentarios, visualizaciones
+- Autor
+- Caption completo
+- Reacciones
+- Shares
+- Imagen/thumbnail
+- URL canónica
+- ❌ Sin comentarios ni vistas
+
+## Troubleshooting
+
+**"Facebook redirected to security checkpoint"**
+
+- Facebook detectó login sospechoso
+- Puede pasar si usás las mismas cookies desde múltiples IPs
+- Solución: Obtené nuevas cookies o usá sin cookies
+
+**"Facebook redirected to login page"**
+
+- Cookies expiradas o inválidas
+- Solución: Obtené nuevas cookies de tu sesión actual
+
+**"Injected 0 cookies"**
+
+- Variables de entorno no configuradas correctamente
+- Verifica los nombres: `FB_COOKIE_C_USER`, `FB_COOKIE_XS`, etc.
+
+## Estado Actual (Febrero 2026)
+
+Actualmente el scraper funciona **sin cookies** extrayendo datos públicos de OpenGraph meta tags. Las cookies están implementadas pero pueden triggear checkpoints de seguridad de Facebook, así que se recomienda:
+
+1. **Usar solo proxy** (sin cookies) para datos públicos confiables
+2. **Proxy + cookies** solo si necesitás comentarios/vistas y estás dispuesto a renovar cookies frecuentemente

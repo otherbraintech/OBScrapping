@@ -1,71 +1,246 @@
-# Deployment Guide
+# Guía de Deployment
 
-## ❌ Why NOT Vercel?
+## ¿Por qué NO Vercel?
 
-You asked about Vercel, but **it is not recommended** for this specific project.
+Vercel **NO soporta** aplicaciones que requieren:
 
-### The Reasons:
+- Headless browsers (Playwright/Puppeteer)
+- Procesos de larga duración (>10 segundos)
+- Instalación de binarios de sistema (Chromium)
 
-1.  **Timeout Limits:** Vercel Serverless Functions have a hard limit of **10 seconds** (Hobby) or **60 seconds** (Pro). Our scraper intentionally waits 10-30 seconds to simulate human behavior. It will be killed before it finishes.
-2.  **Binary Size:** Vercel has a 50MB function size limit. The Chromium browser required by Playwright is ~150MB+.
-3.  **Ephemeral Filesystem:** Taking screenshots or saving logs to disk is difficult.
+Nuestro scraper necesita las 3 cosas arriba, por lo tanto **Vercel no es compatible**.
 
----
+## Plataformas Compatibles
 
-## ✅ Recommended: Docker-based Hosting
+### ✅ EasyPanel (Recomendado)
 
-Since you have a `Dockerfile`, the best way to deploy is using a service that runs containers.
+**Ventajas:**
 
-### Option A: EasyPanel (Recommended)
+- Docker nativo
+- Soporte completo de Playwright
+- Variables de entorno fáciles
+- Logs en tiempo real
+- Auto-deploy desde GitHub
+- Precio razonable
 
-_I see you use EasyPanel for your n8n instance (`easypanel.host`). This is the easiest path._
+**Setup:**
 
-1.  **Login** to your EasyPanel dashboard.
-2.  **Create Project** (or use existing).
-3.  **Add Service** -> **App**.
-4.  **Source:**
-    - If your code is on GitHub: Select your repo.
-    - If not: You can use the "Image" option if you push your image to Docker Hub, but GitHub is easier.
-5.  **Build Method:** Select "Dockerfile".
-6.  **Environment Variables:**
-    - Key: `WEBHOOK_URL`
-    - Value: `https://intelexia-labs-n8n.af9gwe.easypanel.host/webhook-test/...`
-7.  **Deploy.**
+1. **Creá un nuevo servicio** en EasyPanel
+2. **Conectá tu repositorio de GitHub**
+3. **Configurá variables de entorno:**
 
-EasyPanel will build the Docker container and run it. It doesn't have the 10s timeout limit.
+   ```bash
+   # Proxy (Requerido)
+   PROXY_HOST=gw.dataimpulse.com
+   PROXY_PORT=823
+   PROXY_USERNAME=...
+   PROXY_PASSWORD=...
 
-### Option B: Railway / Render (Alternatives)
+   # Cookies de Facebook (Opcionales)
+   FB_COOKIE_C_USER=...
+   FB_COOKIE_XS=...
+   FB_COOKIE_DATR=...
+   FB_COOKIE_FR=...
+   FB_COOKIE_SB=...
+   ```
 
-If you don't have access to the EasyPanel server for this app:
+4. **Configurá el puerto:** 80 (EasyPanel maneja el routing)
+5. **Deploy**
 
-1.  **Push** your code to a GitHub repository.
-2.  **Sign up** for [Railway.app](https://railway.app) or [Render.com](https://render.com).
-3.  **New Project** -> Select your GitHub repo.
-4.  They will automatically detect the `Dockerfile`.
-5.  **Variables:** Add `WEBHOOK_URL` in the settings.
-6.  **Deploy.**
+EasyPanel detectará automáticamente el `Dockerfile` y usará esa configuración.
 
----
+### ✅ Railway
 
-## 🌍 Exposing to Internet
+**Ventajas:**
 
-Once deployed, you will get a public URL (e.g., `https://my-scraper.up.railway.app`).
+- Similar a EasyPanel
+- Free tier generoso
+- Auto-deploy desde GitHub
 
-**Update your n8n workflow:**
-Change the HTTP Request URL from `http://127.0.0.1:8000/scrape` to `https://my-scraper.up.railway.app/scrape`.
+**Setup:**
 
----
+1. Importá el repo desde GitHub
+2. Railway detecta el Dockerfile automáticamente
+3. Agregá las variables de entorno (mismo que EasyPanel)
+4. Deploy
 
-## 🔧 Troubleshooting
+### ✅ Render
 
-### "No such image" Error (EasyPanel)
+**Ventajas:**
 
-If the deployment fails with `No such image: easypanel/intelexia-labs/obscrapping:latest`, it means the **Build Phase failed**.
+- Free tier disponible
+- Docker support
 
-**Common Cause: Typo in Dockerfile Path**
-If the Build Log says `failed to read dockerfile: open Dockefile...`:
+**Desventajas:**
 
-1.  Go to **Project -> Services -> App -> Build**.
-2.  Find **Docker File Path**.
-3.  Change it from `Dockefile` to `Dockerfile`.
-4.  Click **Save** and then **Rebuild**.
+- Free tier tiene spin-down (instancia se apaga después de 15min inactiva)
+- Puede ser lento para scraping
+
+**Setup:**
+
+1. New Web Service → Docker
+2. Conectá GitHub repo
+3. Configurá env vars
+4. Deploy
+
+### ✅ DigitalOcean App Platform
+
+**Ventajas:**
+
+- Confiable
+- Escalable
+- Buen soporte de Docker
+
+**Desventajas:**
+
+- No free tier
+- ~$5-12/mes mínimo
+
+## Dockerfile Explicado
+
+```dockerfile
+FROM mcr.microsoft.com/playwright/python:v1.49.1-noble
+
+WORKDIR /app
+
+# Instalar dependencias Python
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copiar código
+COPY . .
+
+# Instalar Playwright browsers
+RUN playwright install chromium
+
+# Puerto
+EXPOSE 80
+
+# Comando de inicio
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
+```
+
+**Puntos clave:**
+
+- Usa imagen base de Playwright (ya tiene Chromium dependencies)
+- Puerto 80 (configurable en EasyPanel)
+- `playwright install chromium` instala el browser binario
+
+## Environment Variables
+
+### Requeridas
+
+```bash
+PROXY_HOST=gw.dataimpulse.com
+PROXY_PORT=823
+PROXY_USERNAME=...
+PROXY_PASSWORD=...
+```
+
+Sin estas, Cloudflare bloqueará las requests.
+
+### Opcionales
+
+```bash
+FB_COOKIE_C_USER=...       # Solo si querés intentar scraping con login
+FB_COOKIE_XS=...           # Puede triggear security checkpoints
+FB_COOKIE_DATR=...         # Ver facebook_cookies_setup.md
+FB_COOKIE_FR=...
+FB_COOKIE_SB=...
+```
+
+## Verificación Post-Deploy
+
+1. **Check health endpoint:**
+
+   ```bash
+   curl https://tu-dominio.easypanel.host/
+   ```
+
+   Debería devolver: `{"message": "Facebook Scraper API", "status": "running"}`
+
+2. **Revisá logs:**
+   - EasyPanel: Logs tab
+   - Railway: Deployment logs
+   - Buscar línea: `Uvicorn running on http://0.0.0.0:80`
+
+3. **Test scrape:**
+   Desde n8n o Postman:
+
+   ```bash
+   POST https://tu-dominio/scrape
+   {
+     "url": "https://www.facebook.com/...",
+     "webhook_url": "https://webhook.site/..."
+   }
+   ```
+
+4. **Verificá proxy en logs:**
+   Deberías ver: `Using proxy: gw.dataimpulse.com:823`
+
+## Troubleshooting
+
+### "Chromium executable doesn't exist"
+
+- Ejecutar: `playwright install chromium` en el Dockerfile
+- Asegurate de usar imagen base de Playwright
+
+### "Cannot connect to proxy"
+
+- Variables de entorno mal configuradas
+- Credenciales de DataImpulse inválidas/expiradas
+
+### "Port 8000 is already in use"
+
+- Cambiar `--port 80` en el CMD del Dockerfile
+- Configurar puerto correcto en EasyPanel
+
+### Timeouts en scraping
+
+- Aumentar timeout en n8n HTTP Request node (120 segundos mínimo)
+- Verificar que el webhook_url sea accesible desde el servidor
+
+## Costos Estimados
+
+| Plataforma       | Costo/Mes | Notas                         |
+| ---------------- | --------- | ----------------------------- |
+| **EasyPanel**    | $5-15     | Depende del plan              |
+| **Railway**      | $0-10     | Free tier hasta 500 horas/mes |
+| **Render**       | $0-7      | Free tier con limitaciones    |
+| **DigitalOcean** | $12+      | Sin free tier                 |
+| **Proxies**      | $100-300  | DataImpulse o similar         |
+
+**Total:** ~$105-315/mes (mayormente por proxies)
+
+## Auto-Deploy Setup
+
+### GitHub Actions (Opcional)
+
+Si querés CI/CD automático:
+
+```yaml
+# .github/workflows/deploy.yml
+name: Deploy to EasyPanel
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Trigger EasyPanel Deploy
+        run: |
+          curl -X POST https://easypanel.host/api/deploy \
+            -H "Authorization: Bearer ${{ secrets.EASYPANEL_TOKEN }}"
+```
+
+Pero EasyPanel ya tiene auto-deploy nativo más simple.
+
+## Respaldo y Rollback
+
+- EasyPanel guarda últimas 10 deployments
+- Podes hacer rollback con un click
+- GitHub también sirve como backup del código
