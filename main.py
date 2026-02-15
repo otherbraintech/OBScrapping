@@ -291,7 +291,7 @@ async def run_scraper(task_id: str, url: str):
             js_data = await page.evaluate("""() => {
                 const data = {};
                 
-                // Scan all aria-labels for engagement metrics
+                // Scan all aria-labels
                 const allElements = document.querySelectorAll('[aria-label]');
                 const ariaLabels = [];
                 allElements.forEach(el => {
@@ -300,19 +300,29 @@ async def run_scraper(task_id: str, url: str):
                 });
                 data.aria_labels = ariaLabels;
                 
-                // Find all text that looks like engagement counts
+                // Find ALL span texts that contain numbers (broad capture)
                 const engagementTexts = [];
                 const allSpans = document.querySelectorAll('span');
                 allSpans.forEach(span => {
                     const text = span.innerText.trim();
-                    if (text && text.length < 100) {
-                        // Look for patterns like "1.2K", "291", "38 comments"
-                        if (/\\d/.test(text) && /\\b(comment|reaction|share|view|like|play|comentario|reacci|compartid|vista|reproduc|me gusta)s?\\b/i.test(text)) {
+                    if (text && text.length < 150 && text.length > 0) {
+                        if (/\d/.test(text)) {
                             engagementTexts.push(text);
                         }
                     }
                 });
                 data.engagement_texts = engagementTexts;
+                
+                // Find ALL div texts with "Todas las reacciones" or reaction counts
+                const reactionDivs = document.querySelectorAll('div[role="button"]');
+                const buttonTexts = [];
+                reactionDivs.forEach(div => {
+                    const text = div.innerText.trim();
+                    if (text && text.length < 100) {
+                        buttonTexts.push(text);
+                    }
+                });
+                data.button_texts = buttonTexts;
                 
                 // Find video duration if available
                 const video = document.querySelector('video');
@@ -326,7 +336,10 @@ async def run_scraper(task_id: str, url: str):
                 const timeLinks = document.querySelectorAll('a[role="link"]');
                 timeLinks.forEach(link => {
                     const ariaLabel = link.getAttribute('aria-label');
-                    if (ariaLabel && /\\d{1,2}\\s*(de\\s+)?\\w+\\s*(de\\s+)?\\d{4}|\\d+\\s*(hours?|minutes?|days?|horas?|minutos?|días?|h|m|d)\\s*ago|yesterday|hace/i.test(ariaLabel)) {
+                    if (ariaLabel && /\d/.test(ariaLabel) && (
+                        /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(ariaLabel) ||
+                        /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(ariaLabel)
+                    )) {
                         data.post_date = ariaLabel;
                     }
                 });
@@ -343,47 +356,65 @@ async def run_scraper(task_id: str, url: str):
                 return data;
             }""")
             
-            task_logger.info(f"JS extraction found: {len(js_data.get('aria_labels', []))} aria-labels, {len(js_data.get('engagement_texts', []))} engagement texts")
+            task_logger.info(f"JS extraction found: {len(js_data.get('aria_labels', []))} aria-labels, {len(js_data.get('engagement_texts', []))} engagement texts, {len(js_data.get('button_texts', []))} button texts")
             
             # Parse aria-labels for engagement data
+            # Facebook ES format: "Me gusta: 263 personas", "Me encanta: 20 personas"
+            reaction_types_total = 0
             for label in js_data.get("aria_labels", []):
-                label_lower = label.lower()
-                
+                # Spanish reaction aria-labels: "Me gusta: X personas", "Me encanta: X personas", etc.
+                reaction_match = re.search(r'(?:Me gusta|Me encanta|Me divierte|Me asombra|Me entristece|Me enoja|Like|Love|Haha|Wow|Sad|Angry):\s*([\d,.]+)\s*persona', label, re.IGNORECASE)
+                if reaction_match:
+                    count = int(reaction_match.group(1).replace(',', '').replace('.', ''))
+                    reaction_types_total += count
+                    
                 # Comments from aria-label
                 if not scraped_data.get("comments"):
-                    comments_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)', label, re.IGNORECASE)
-                    if comments_match:
-                        scraped_data["comments"] = comments_match.group(1)
-                
-                # Views from aria-label
-                if not scraped_data.get("views"):
-                    views_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?)', label, re.IGNORECASE)
-                    if views_match:
-                        scraped_data["views"] = views_match.group(1)
-                
-                # Reactions from aria-label
-                if not scraped_data.get("reactions"):
-                    reactions_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones|likes?|me gusta)', label, re.IGNORECASE)
-                    if reactions_match:
-                        scraped_data["reactions"] = reactions_match.group(1)
-                
-                # Shares from aria-label
-                if not scraped_data.get("shares"):
-                    shares_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:shares?|compartid|veces compartido)', label, re.IGNORECASE)
-                    if shares_match:
-                        scraped_data["shares"] = shares_match.group(1)
-            
-            # Parse engagement text elements
-            for text in js_data.get("engagement_texts", []):
-                if not scraped_data.get("comments"):
-                    m = re.search(r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)', text, re.IGNORECASE)
+                    m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', label, re.IGNORECASE)
                     if m:
                         scraped_data["comments"] = m.group(1)
                 
+                # Views from aria-label
                 if not scraped_data.get("views"):
-                    m = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?)', text, re.IGNORECASE)
+                    m = re.search(r'([\d,.]+)\s*(?:mil\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas)', label, re.IGNORECASE)
                     if m:
-                        scraped_data["views"] = m.group(1)
+                        scraped_data["views"] = m.group(0).strip()
+            
+            # If we summed individual reaction types, use that as total
+            if reaction_types_total > 0 and not scraped_data.get("reactions"):
+                scraped_data["reactions"] = str(reaction_types_total)
+            
+            # Parse engagement text from spans and buttons
+            all_texts = js_data.get("engagement_texts", []) + js_data.get("button_texts", [])
+            for text in all_texts:
+                # Comments: "16 comentarios"
+                if not scraped_data.get("comments"):
+                    m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', text, re.IGNORECASE)
+                    if m:
+                        scraped_data["comments"] = m.group(1)
+                
+                # Shares: "38 veces compartido" or "38 shares"
+                if not scraped_data.get("shares"):
+                    m = re.search(r'([\d,.]+)\s*(?:veces compartido|shares?|compartido)', text, re.IGNORECASE)
+                    if m:
+                        scraped_data["shares"] = m.group(1)
+                
+                # Views: "5,5 mil visualizaciones" or "5.5K views"
+                if not scraped_data.get("views"):
+                    m = re.search(r'([\d,.]+)\s*mil\s+(?:visualizaciones|reproducciones|vistas)', text, re.IGNORECASE)
+                    if m:
+                        scraped_data["views"] = m.group(0).strip()
+                    else:
+                        m = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|vistas)', text, re.IGNORECASE)
+                        if m:
+                            scraped_data["views"] = m.group(0).strip()
+                
+                # Reactions total: "Todas las reacciones:\n291"
+                if not scraped_data.get("reactions"):
+                    if "reacciones" in text.lower() or "reactions" in text.lower():
+                        m = re.search(r'([\d,.]+)', text)
+                        if m:
+                            scraped_data["reactions"] = m.group(1)
             
             # Video data from JS
             if js_data.get("video_src"):
@@ -405,32 +436,33 @@ async def run_scraper(task_id: str, url: str):
             page_text = await page.inner_text("body")
             
             if not scraped_data.get("comments"):
-                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)']:
-                    m = re.search(pattern, page_text, re.IGNORECASE)
-                    if m:
-                        scraped_data["comments"] = m.group(1)
-                        break
+                m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', page_text, re.IGNORECASE)
+                if m:
+                    scraped_data["comments"] = m.group(1)
             
             if not scraped_data.get("views"):
-                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?)', r'([\d,.]+[KMkm]?)\s*(?:vistas)']:
-                    m = re.search(pattern, page_text, re.IGNORECASE)
+                # Match "5,5 mil visualizaciones" format
+                m = re.search(r'([\d,.]+\s*mil)\s*(?:visualizaciones|reproducciones|vistas)', page_text, re.IGNORECASE)
+                if m:
+                    scraped_data["views"] = m.group(0).strip()
+                else:
+                    m = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas)', page_text, re.IGNORECASE)
                     if m:
-                        scraped_data["views"] = m.group(1)
-                        break
+                        scraped_data["views"] = m.group(0).strip()
                         
             if not scraped_data.get("reactions"):
-                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones)', r'([\d,.]+[KMkm]?)\s*(?:likes?|me gusta)']:
-                    m = re.search(pattern, page_text, re.IGNORECASE)
+                m = re.search(r'(?:Todas las reacciones:?\s*)([\d,.]+)', page_text, re.IGNORECASE)
+                if m:
+                    scraped_data["reactions"] = m.group(1)
+                else:
+                    m = re.search(r'([\d,.]+)\s*(?:reactions?|reacciones)', page_text, re.IGNORECASE)
                     if m:
                         scraped_data["reactions"] = m.group(1)
-                        break
             
             if not scraped_data.get("shares"):
-                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)']:
-                    m = re.search(pattern, page_text, re.IGNORECASE)
-                    if m:
-                        scraped_data["shares"] = m.group(1)
-                        break
+                m = re.search(r'([\d,.]+)\s*(?:veces compartido|shares?)', page_text, re.IGNORECASE)
+                if m:
+                    scraped_data["shares"] = m.group(1)
         except Exception as e:
             task_logger.warning(f"Page text extraction error: {e}")
 
