@@ -21,6 +21,9 @@ from playwright_stealth import stealth_async
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 if not WEBHOOK_URL:
     logging.warning("WEBHOOK_URL not set. App will run but webhook notifications will be skipped.")
+WEBHOOK_INCLUDE_EXTRACTED = os.getenv("WEBHOOK_INCLUDE_EXTRACTED", "0") == "1"
+WEBHOOK_EXTRACTED_MAX_LIST_ITEMS = int(os.getenv("WEBHOOK_EXTRACTED_MAX_LIST_ITEMS", "200"))
+WEBHOOK_EXTRACTED_MAX_STR_LEN = int(os.getenv("WEBHOOK_EXTRACTED_MAX_STR_LEN", "2000"))
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -80,6 +83,52 @@ def _extract_comments_count_from_text(text: str) -> Optional[str]:
         if m:
             return m.group(1)
     return None
+
+def _normalize_count(value: Optional[str]) -> Optional[int]:
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.replace(" ", "")
+    # Handle 1.2K / 1,2K and 3M / 3,4M
+    m = re.match(r"^(\d+(?:[\.,]\d+)?)\s*([KkMm])$", s)
+    if m:
+        num = float(m.group(1).replace(",", "."))
+        mult = 1000 if m.group(2).lower() == "k" else 1000000
+        return int(num * mult)
+    # Handle plain numbers with separators
+    s_digits = re.sub(r"[^0-9]", "", s)
+    if not s_digits:
+        return None
+    try:
+        return int(s_digits)
+    except Exception:
+        return None
+
+def _summarize_for_webhook(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if len(value) <= WEBHOOK_EXTRACTED_MAX_STR_LEN:
+            return value
+        return value[:WEBHOOK_EXTRACTED_MAX_STR_LEN] + "..."
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {k: _summarize_for_webhook(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        sliced = items[:WEBHOOK_EXTRACTED_MAX_LIST_ITEMS]
+        summarized = [_summarize_for_webhook(v) for v in sliced]
+        if len(items) > WEBHOOK_EXTRACTED_MAX_LIST_ITEMS:
+            summarized.append({"_truncated": len(items) - WEBHOOK_EXTRACTED_MAX_LIST_ITEMS})
+        return summarized
+    # Fallback: make it serializable
+    s = str(value)
+    if len(s) <= WEBHOOK_EXTRACTED_MAX_STR_LEN:
+        return s
+    return s[:WEBHOOK_EXTRACTED_MAX_STR_LEN] + "..."
 
 def _to_mbasic_url(url: str) -> str:
     # Keep it simple: mbasic often gives a more static HTML. Let Facebook redirect if needed.
@@ -785,6 +834,14 @@ async def run_scraper(task_id: str, url: str):
         description = scraped_data.get("og_description") or scraped_data.get("meta_description") or scraped_data.get("caption")
         clean_caption = scraped_data.get("clean_caption") or description
         
+        comments_raw = scraped_data.get("comments")
+        comments_count = _normalize_count(comments_raw)
+
+        if WEBHOOK_INCLUDE_EXTRACTED:
+            extracted_data = _summarize_for_webhook(scraped_data)
+        else:
+            extracted_data = None
+
         final_data = {
             "author": author,
             "caption": clean_caption,
@@ -796,13 +853,16 @@ async def run_scraper(task_id: str, url: str):
             "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
             "reactions": scraped_data.get("reactions"),
             "shares": scraped_data.get("shares"),
-            "comments": scraped_data.get("comments"),
+            "comments": comments_raw,
+            "comments_count": comments_count,
+            "comments_raw": comments_raw,
             "views": scraped_data.get("views"),
             "post_date": scraped_data.get("post_date"),
             "user_link": scraped_data.get("user_link"),
             "canonical_url": scraped_data.get("og_url"),
             "content_type": scraped_data.get("og_type"),
             "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]},
+            "extracted_data": extracted_data,
             "diagnostic": {
                 "final_url": scraped_data.get("diagnostic_final_url") or page.url,
                 "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
