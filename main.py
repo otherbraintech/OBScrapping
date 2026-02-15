@@ -315,6 +315,34 @@ async def run_scraper(task_id: str, url: str):
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
 
+        # ===== DIAGNOSTIC: Capture what Facebook is showing =====
+        try:
+            current_url = page.url
+            current_title = await page.title()
+            page_html = await page.content()
+            
+            task_logger.info(f"DIAGNOSTIC - Final URL: {current_url}")
+            task_logger.info(f"DIAGNOSTIC - Page Title: {current_title}")
+            task_logger.info(f"DIAGNOSTIC - HTML Length: {len(page_html)} bytes")
+            
+            # Save screenshot for debugging
+            screenshot_path = f"/tmp/fb_debug_{task_id[:8]}.png"
+            await page.screenshot(path=screenshot_path, full_page=False)
+            task_logger.info(f"DIAGNOSTIC - Screenshot saved: {screenshot_path}")
+            
+            # Log HTML preview (first 1000 chars)
+            task_logger.info(f"DIAGNOSTIC - HTML Preview: {page_html[:1000]}")
+            
+            # Check for common blocking patterns
+            if "checkpoint" in current_url.lower():
+                task_logger.error("Facebook redirected to security checkpoint - cookies may be invalid or flagged")
+            if "login" in current_url.lower():
+                task_logger.error("Facebook redirected to login page - cookies expired or invalid")
+            if len(page_html) < 5000:
+                task_logger.warning(f"Very short HTML ({len(page_html)} bytes) - possible block or error page")
+        except Exception as diag_err:
+            task_logger.warning(f"Diagnostic logging failed: {diag_err}")
+
         # ===== PARSING LOGIC =====
         task_logger.info("Parsing page content...")
         scraped_data = {}
