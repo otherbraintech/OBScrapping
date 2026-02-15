@@ -62,6 +62,9 @@ class ScrapeRequest(BaseModel):
     url: HttpUrl
     network: Optional[str] = "facebook"
     type: Optional[str] = "reel"
+    debug_raw: Optional[bool] = False
+    raw_snippet_len: Optional[int] = 5000
+    extra_wait_seconds: Optional[float] = 0.0
 
 class ScrapeTaskResponse(BaseModel):
     status: str
@@ -136,6 +139,22 @@ def _summarize_for_webhook(value: Any) -> Any:
     if len(s) <= WEBHOOK_EXTRACTED_MAX_STR_LEN:
         return s
     return s[:WEBHOOK_EXTRACTED_MAX_STR_LEN] + "..."
+
+def _extract_comments_count_from_html(html: str) -> Optional[str]:
+    if not html:
+        return None
+    patterns = [
+        r'"total_comment_count"\s*:\s*(\d+)',
+        r'"comment_count"\s*:\s*(\d+)',
+        r'"comments"\s*:\s*\{[^\}]{0,500}?"total_count"\s*:\s*(\d+)',
+        r'"commentsCount"\s*:\s*(\d+)',
+        r'"commentCount"\s*:\s*(\d+)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return None
 
 def _to_mbasic_url(url: str) -> str:
     # Keep it simple: mbasic often gives a more static HTML. Let Facebook redirect if needed.
@@ -262,7 +281,13 @@ async def send_webhook(data: Dict[str, Any], task_logger):
             task_logger.error(f"Webhook failed: {e}")
 
 # --- Core Scraper ---
-async def run_scraper(task_id: str, url: str):
+async def run_scraper(
+    task_id: str,
+    url: str,
+    debug_raw: bool = False,
+    raw_snippet_len: int = 5000,
+    extra_wait_seconds: float = 0.0,
+):
     task_logger = TaskLogger(logger, {"task_id": task_id})
     task_logger.info(f"Starting scrape for URL: {url}")
 
@@ -405,6 +430,9 @@ async def run_scraper(task_id: str, url: str):
 
         # Initial random wait
         await asyncio.sleep(get_random_delay(5, 10))
+        if extra_wait_seconds and extra_wait_seconds > 0:
+            task_logger.info(f"Extra wait requested: {extra_wait_seconds}s")
+            await asyncio.sleep(float(extra_wait_seconds))
 
         # Check for blocking/login wall
         content = await page.content()
@@ -452,6 +480,9 @@ async def run_scraper(task_id: str, url: str):
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
 
+        page_html = None
+        page_text = None
+
         # ===== DIAGNOSTIC: Capture what Facebook is showing =====
         try:
             current_url = page.url
@@ -472,6 +503,11 @@ async def run_scraper(task_id: str, url: str):
             
             # Log HTML preview (first 1000 chars)
             task_logger.info(f"DIAGNOSTIC - HTML Preview: {page_html[:1000]}")
+
+            if debug_raw:
+                snippet_len = max(0, int(raw_snippet_len or 0))
+                if snippet_len > 0:
+                    scraped_data["raw_html_snippet"] = page_html[:snippet_len]
             
             # Check for common blocking patterns
             if "checkpoint" in current_url.lower():
@@ -728,6 +764,10 @@ async def run_scraper(task_id: str, url: str):
         # --- LAYER 5: Page body text regex fallback ---
         try:
             page_text = await page.inner_text("body")
+            if debug_raw:
+                snippet_len = max(0, int(raw_snippet_len or 0))
+                if snippet_len > 0:
+                    scraped_data["raw_body_text_snippet"] = page_text[:snippet_len]
             
             if not scraped_data.get("comments"):
                 m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', page_text, re.IGNORECASE)
@@ -759,6 +799,24 @@ async def run_scraper(task_id: str, url: str):
                     scraped_data["shares"] = m.group(1)
         except Exception as e:
             task_logger.warning(f"Page text extraction error: {e}")
+
+        if debug_raw and not scraped_data.get("raw_body_text_snippet") and page_text:
+            try:
+                snippet_len = max(0, int(raw_snippet_len or 0))
+                if snippet_len > 0:
+                    scraped_data["raw_body_text_snippet"] = page_text[:snippet_len]
+            except Exception:
+                pass
+
+        # --- LAYER 5.25: Embedded JSON/HTML patterns for comments count ---
+        if not scraped_data.get("comments") and page_html:
+            try:
+                embedded_comments = _extract_comments_count_from_html(page_html)
+                if embedded_comments:
+                    scraped_data["comments"] = embedded_comments
+                    task_logger.info(f"Embedded HTML extraction: comments={embedded_comments}")
+            except Exception as e:
+                task_logger.warning(f"Embedded HTML comments extraction error: {e}")
 
         # --- LAYER 5.5: mobile fallbacks for comments count ---
         # If Facebook serves a JS shell / restricted view on www, mbasic/m can still reveal counts.
@@ -935,7 +993,14 @@ async def scrape_endpoint(request: ScrapeRequest, background_tasks: BackgroundTa
     task_id = str(uuid.uuid4())
     
     # Add background task
-    background_tasks.add_task(run_scraper, task_id, str(request.url))
+    background_tasks.add_task(
+        run_scraper,
+        task_id,
+        str(request.url),
+        bool(request.debug_raw),
+        int(request.raw_snippet_len or 0),
+        float(request.extra_wait_seconds or 0.0),
+    )
     
     return {
         "status": "accepted",
