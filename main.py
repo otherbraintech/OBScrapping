@@ -17,9 +17,9 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 from playwright_stealth import stealth_async
 
 # --- Configuration ---
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL environment variable is not set")
+    logging.warning("WEBHOOK_URL not set. App will run but webhook notifications will be skipped.")
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -38,10 +38,9 @@ VIEWPORTS = [
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] [%(task_id)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("scraper.log", mode='a', encoding='utf-8')
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger("fb_scraper")
@@ -61,7 +60,7 @@ class ScrapeTaskResponse(BaseModel):
 # --- Helper Functions ---
 class TaskLogger(logging.LoggerAdapter):
     def process(self, msg, kwargs):
-        return f"{msg}", {**kwargs, "extra": {**self.extra}}
+        return f"[{self.extra.get('task_id', 'unknown')}] {msg}", kwargs
 
 def get_random_delay(min_seconds=10.0, max_seconds=30.0):
     return random.uniform(min_seconds, max_seconds)
@@ -91,6 +90,9 @@ async def simulate_human_behavior(page, task_logger):
 
 async def send_webhook(data: Dict[str, Any], task_logger):
     """Sends the result to the n8n webhook."""
+    if not WEBHOOK_URL:
+        task_logger.warning("WEBHOOK_URL not configured, skipping webhook.")
+        return
     task_logger.info(f"Sending webhook to {WEBHOOK_URL}...")
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:

@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "-----> Installing Playwright Chromium browser..."
+python -m playwright install chromium
+python -m playwright install-deps chromium
+echo "-----> Playwright Chromium installed!"
