@@ -241,67 +241,200 @@ async def run_scraper(task_id: str, url: str):
         except:
             pass
 
-        # --- LAYER 3: Dynamic content from page text ---
-        page_text = await page.inner_text("body")
+        # --- LAYER 3: Parse OG title for engagement data ---
+        # Facebook OG titles often contain: "291 reactions · 38 shares | Caption text | Author Name"
+        og_title = scraped_data.get("og_title", "")
+        if og_title:
+            task_logger.info(f"Parsing OG title: {og_title[:100]}...")
+            
+            # Extract reactions from OG title
+            og_reactions_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones)', og_title, re.IGNORECASE)
+            if og_reactions_match:
+                scraped_data["reactions"] = og_reactions_match.group(1)
+            
+            # Extract shares from OG title
+            og_shares_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)', og_title, re.IGNORECASE)
+            if og_shares_match:
+                scraped_data["shares"] = og_shares_match.group(1)
+            
+            # Extract comments from OG title
+            og_comments_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)', og_title, re.IGNORECASE)
+            if og_comments_match:
+                scraped_data["comments"] = og_comments_match.group(1)
 
-        # Extract engagement numbers using regex patterns
-        # Reactions/Likes
+            # Extract views from OG title
+            og_views_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones)', og_title, re.IGNORECASE)
+            if og_views_match:
+                scraped_data["views"] = og_views_match.group(1)
+
+            # Extract author from OG title (usually after last "|")
+            if "|" in og_title:
+                parts = og_title.split("|")
+                # Author is typically the last part
+                potential_author = parts[-1].strip()
+                if potential_author and len(potential_author) > 1 and len(potential_author) < 100:
+                    scraped_data["author_from_title"] = potential_author
+                # Clean caption is the middle part (between engagement stats and author)
+                if len(parts) >= 3:
+                    scraped_data["clean_caption"] = parts[1].strip()
+                elif len(parts) == 2:
+                    scraped_data["clean_caption"] = parts[0].strip()
+                    # Remove the engagement prefix if present
+                    caption = scraped_data["clean_caption"]
+                    caption = re.sub(r'^[\d,.]+[KMkm]?\s*(?:reactions?|reacciones)\s*·?\s*', '', caption, flags=re.IGNORECASE)
+                    caption = re.sub(r'^[\d,.]+[KMkm]?\s*(?:shares?|compartido)\s*·?\s*', '', caption, flags=re.IGNORECASE)
+                    scraped_data["clean_caption"] = caption.strip()
+
+        # --- LAYER 4: JavaScript evaluation for deep data extraction ---
+        task_logger.info("Running JavaScript extraction...")
         try:
-            patterns_reactions = [
-                r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones)',
-                r'([\d,.]+[KMkm]?)\s*(?:likes?|me gusta)',
-                r'([\d,.]+[KMkm]?)\s*(?:people reacted|personas reaccionaron)',
-            ]
-            for pattern in patterns_reactions:
-                match = re.search(pattern, page_text, re.IGNORECASE)
-                if match:
-                    scraped_data["reactions"] = match.group(1)
-                    break
-        except:
-            pass
+            js_data = await page.evaluate("""() => {
+                const data = {};
+                
+                // Scan all aria-labels for engagement metrics
+                const allElements = document.querySelectorAll('[aria-label]');
+                const ariaLabels = [];
+                allElements.forEach(el => {
+                    const label = el.getAttribute('aria-label');
+                    if (label) ariaLabels.push(label);
+                });
+                data.aria_labels = ariaLabels;
+                
+                // Find all text that looks like engagement counts
+                const engagementTexts = [];
+                const allSpans = document.querySelectorAll('span');
+                allSpans.forEach(span => {
+                    const text = span.innerText.trim();
+                    if (text && text.length < 100) {
+                        // Look for patterns like "1.2K", "291", "38 comments"
+                        if (/\\d/.test(text) && /\\b(comment|reaction|share|view|like|play|comentario|reacci|compartid|vista|reproduc|me gusta)s?\\b/i.test(text)) {
+                            engagementTexts.push(text);
+                        }
+                    }
+                });
+                data.engagement_texts = engagementTexts;
+                
+                // Find video duration if available
+                const video = document.querySelector('video');
+                if (video) {
+                    data.video_duration = video.duration || null;
+                    data.video_src = video.src || null;
+                    data.video_poster = video.poster || null;
+                }
+                
+                // Find timestamp/date
+                const timeLinks = document.querySelectorAll('a[role="link"]');
+                timeLinks.forEach(link => {
+                    const ariaLabel = link.getAttribute('aria-label');
+                    if (ariaLabel && /\\d{1,2}\\s*(de\\s+)?\\w+\\s*(de\\s+)?\\d{4}|\\d+\\s*(hours?|minutes?|days?|horas?|minutos?|días?|h|m|d)\\s*ago|yesterday|hace/i.test(ariaLabel)) {
+                        data.post_date = ariaLabel;
+                    }
+                });
+                
+                // Find all abbr/time elements
+                const timeEls = document.querySelectorAll('abbr, time');
+                timeEls.forEach(el => {
+                    const title = el.getAttribute('title') || el.getAttribute('datetime');
+                    if (title) {
+                        data.post_date = data.post_date || title;
+                    }
+                });
+                
+                return data;
+            }""")
+            
+            task_logger.info(f"JS extraction found: {len(js_data.get('aria_labels', []))} aria-labels, {len(js_data.get('engagement_texts', []))} engagement texts")
+            
+            # Parse aria-labels for engagement data
+            for label in js_data.get("aria_labels", []):
+                label_lower = label.lower()
+                
+                # Comments from aria-label
+                if not scraped_data.get("comments"):
+                    comments_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)', label, re.IGNORECASE)
+                    if comments_match:
+                        scraped_data["comments"] = comments_match.group(1)
+                
+                # Views from aria-label
+                if not scraped_data.get("views"):
+                    views_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?)', label, re.IGNORECASE)
+                    if views_match:
+                        scraped_data["views"] = views_match.group(1)
+                
+                # Reactions from aria-label
+                if not scraped_data.get("reactions"):
+                    reactions_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones|likes?|me gusta)', label, re.IGNORECASE)
+                    if reactions_match:
+                        scraped_data["reactions"] = reactions_match.group(1)
+                
+                # Shares from aria-label
+                if not scraped_data.get("shares"):
+                    shares_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:shares?|compartid|veces compartido)', label, re.IGNORECASE)
+                    if shares_match:
+                        scraped_data["shares"] = shares_match.group(1)
+            
+            # Parse engagement text elements
+            for text in js_data.get("engagement_texts", []):
+                if not scraped_data.get("comments"):
+                    m = re.search(r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)', text, re.IGNORECASE)
+                    if m:
+                        scraped_data["comments"] = m.group(1)
+                
+                if not scraped_data.get("views"):
+                    m = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?)', text, re.IGNORECASE)
+                    if m:
+                        scraped_data["views"] = m.group(1)
+            
+            # Video data from JS
+            if js_data.get("video_src"):
+                scraped_data["video_src"] = js_data["video_src"]
+            if js_data.get("video_poster"):
+                scraped_data["video_poster"] = js_data["video_poster"]
+            if js_data.get("video_duration"):
+                scraped_data["video_duration_seconds"] = js_data["video_duration"]
+            
+            # Post date
+            if js_data.get("post_date"):
+                scraped_data["post_date"] = js_data["post_date"]
+                
+        except Exception as e:
+            task_logger.warning(f"JS extraction error: {e}")
 
-        # Shares
+        # --- LAYER 5: Page body text regex fallback ---
         try:
-            patterns_shares = [
-                r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)',
-                r'([\d,.]+[KMkm]?)\s*(?:times shared)',
-            ]
-            for pattern in patterns_shares:
-                match = re.search(pattern, page_text, re.IGNORECASE)
-                if match:
-                    scraped_data["shares"] = match.group(1)
-                    break
-        except:
-            pass
+            page_text = await page.inner_text("body")
+            
+            if not scraped_data.get("comments"):
+                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)']:
+                    m = re.search(pattern, page_text, re.IGNORECASE)
+                    if m:
+                        scraped_data["comments"] = m.group(1)
+                        break
+            
+            if not scraped_data.get("views"):
+                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?)', r'([\d,.]+[KMkm]?)\s*(?:vistas)']:
+                    m = re.search(pattern, page_text, re.IGNORECASE)
+                    if m:
+                        scraped_data["views"] = m.group(1)
+                        break
+                        
+            if not scraped_data.get("reactions"):
+                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones)', r'([\d,.]+[KMkm]?)\s*(?:likes?|me gusta)']:
+                    m = re.search(pattern, page_text, re.IGNORECASE)
+                    if m:
+                        scraped_data["reactions"] = m.group(1)
+                        break
+            
+            if not scraped_data.get("shares"):
+                for pattern in [r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)']:
+                    m = re.search(pattern, page_text, re.IGNORECASE)
+                    if m:
+                        scraped_data["shares"] = m.group(1)
+                        break
+        except Exception as e:
+            task_logger.warning(f"Page text extraction error: {e}")
 
-        # Comments
-        try:
-            patterns_comments = [
-                r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)',
-            ]
-            for pattern in patterns_comments:
-                match = re.search(pattern, page_text, re.IGNORECASE)
-                if match:
-                    scraped_data["comments"] = match.group(1)
-                    break
-        except:
-            pass
-
-        # Views
-        try:
-            patterns_views = [
-                r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones)',
-                r'([\d,.]+[KMkm]?)\s*(?:plays?)',
-            ]
-            for pattern in patterns_views:
-                match = re.search(pattern, page_text, re.IGNORECASE)
-                if match:
-                    scraped_data["views"] = match.group(1)
-                    break
-        except:
-            pass
-
-        # --- LAYER 4: DOM element fallbacks ---
+        # --- LAYER 6: DOM element fallbacks ---
         # Caption from visible text (if OG description didn't capture it)
         if not scraped_data.get("og_description"):
             try:
@@ -321,26 +454,27 @@ async def run_scraper(task_id: str, url: str):
                 pass
 
         # Username / Page Name
-        try:
-            user_selectors = [
-                "h2 a[role='link']",
-                "h3 a[role='link']",
-                "strong a[role='link']",
-                "h2 a", "h3 a",
-                "a[aria-label][role='link'] strong",
-            ]
-            for sel in user_selectors:
-                el = page.locator(sel).first
-                if await el.count() > 0:
-                    text = await el.text_content()
-                    if text and len(text.strip()) > 1 and text.strip().lower() not in ["facebook", "log in", "sign up", "privacy"]:
-                        scraped_data["username"] = text.strip()
-                        href = await el.get_attribute("href")
-                        if href:
-                            scraped_data["user_link"] = href
-                        break
-        except:
-            pass
+        if not scraped_data.get("author_from_title"):
+            try:
+                user_selectors = [
+                    "h2 a[role='link']",
+                    "h3 a[role='link']",
+                    "strong a[role='link']",
+                    "h2 a", "h3 a",
+                    "a[aria-label][role='link'] strong",
+                ]
+                for sel in user_selectors:
+                    el = page.locator(sel).first
+                    if await el.count() > 0:
+                        text = await el.text_content()
+                        if text and len(text.strip()) > 1 and text.strip().lower() not in ["facebook", "log in", "sign up", "privacy", "iniciar sesión"]:
+                            scraped_data["username"] = text.strip()
+                            href = await el.get_attribute("href")
+                            if href:
+                                scraped_data["user_link"] = href
+                            break
+            except:
+                pass
 
         # Video element
         try:
@@ -348,28 +482,34 @@ async def run_scraper(task_id: str, url: str):
             if await video_el.count() > 0:
                 src = await video_el.get_attribute("src")
                 poster = await video_el.get_attribute("poster")
-                if src:
+                if src and not scraped_data.get("video_src"):
                     scraped_data["video_src"] = src
-                if poster:
-                    scraped_data["thumbnail"] = poster
+                if poster and not scraped_data.get("video_poster"):
+                    scraped_data["video_poster"] = poster
         except:
             pass
 
         # Build clean result
         # Use OG data as primary, fill gaps with DOM data
+        author = scraped_data.get("author_from_title") or scraped_data.get("username")
+        description = scraped_data.get("og_description") or scraped_data.get("meta_description") or scraped_data.get("caption")
+        clean_caption = scraped_data.get("clean_caption") or description
+        
         final_data = {
-            "title": scraped_data.get("og_title") or scraped_data.get("page_title"),
-            "description": scraped_data.get("og_description") or scraped_data.get("meta_description") or scraped_data.get("caption"),
+            "author": author,
+            "caption": clean_caption,
+            "description": description,
             "image": scraped_data.get("og_image"),
             "video_url": scraped_data.get("og_video_secure_url") or scraped_data.get("og_video_url") or scraped_data.get("og_video") or scraped_data.get("video_src"),
             "video_type": scraped_data.get("og_video_type"),
-            "username": scraped_data.get("username"),
-            "user_link": scraped_data.get("user_link"),
+            "video_duration_seconds": scraped_data.get("video_duration_seconds"),
+            "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
             "reactions": scraped_data.get("reactions"),
             "shares": scraped_data.get("shares"),
             "comments": scraped_data.get("comments"),
             "views": scraped_data.get("views"),
-            "thumbnail": scraped_data.get("og_image") or scraped_data.get("thumbnail"),
+            "post_date": scraped_data.get("post_date"),
+            "user_link": scraped_data.get("user_link"),
             "canonical_url": scraped_data.get("og_url"),
             "content_type": scraped_data.get("og_type"),
             "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_")},
