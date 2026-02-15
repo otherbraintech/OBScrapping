@@ -171,37 +171,6 @@ async def run_scraper(task_id: str, url: str):
             is_mobile=False # Desktop simulation usually better for stealth than mobile
         )
 
-        # Inject Facebook cookies if provided (for accessing logged-in content)
-        fb_cookie_c_user = os.getenv("FB_COOKIE_C_USER")
-        fb_cookie_xs = os.getenv("FB_COOKIE_XS")
-        
-        if fb_cookie_c_user and fb_cookie_xs:
-            task_logger.info("Facebook cookies found, injecting into browser context...")
-            cookies = [
-                {
-                    "name": "c_user",
-                    "value": fb_cookie_c_user,
-                    "domain": ".facebook.com",
-                    "path": "/",
-                    "httpOnly": True,
-                    "secure": True,
-                    "sameSite": "None"
-                },
-                {
-                    "name": "xs",
-                    "value": fb_cookie_xs,
-                    "domain": ".facebook.com",
-                    "path": "/",
-                    "httpOnly": True,
-                    "secure": True,
-                    "sameSite": "None"
-                }
-            ]
-            await context.add_cookies(cookies)
-            task_logger.info("Cookies injected successfully.")
-        else:
-            task_logger.warning("No Facebook cookies configured. Scraping as anonymous user (limited data available).")
-
         page = await context.new_page()
 
         # Apply stealth
@@ -259,19 +228,6 @@ async def run_scraper(task_id: str, url: str):
 
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
-
-        # === DIAGNOSTIC LOGGING ===
-        current_url = page.url
-        current_title = await page.title()
-        page_html = await page.content()
-        task_logger.info(f"DIAGNOSTIC - Final URL: {current_url}")
-        task_logger.info(f"DIAGNOSTIC - Page Title: {current_title}")
-        task_logger.info(f"DIAGNOSTIC - HTML Length: {len(page_html)} bytes")
-        task_logger.info(f"DIAGNOSTIC - HTML Preview: {page_html[:500]}")
-        if "checkpoint" in current_url or "login" in current_url:
-            task_logger.error(f"Facebook redirected to security page: {current_url}")
-        if len(page_html) < 5000:
-            task_logger.warning(f"Short HTML ({len(page_html)} bytes) - possible block")
 
         # ===== PARSING LOGIC =====
         task_logger.info("Parsing page content...")
