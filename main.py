@@ -88,6 +88,12 @@ def _to_mbasic_url(url: str) -> str:
     except Exception:
         return url
 
+def _to_m_url(url: str) -> str:
+    try:
+        return re.sub(r"^https?://(www\.)?facebook\.com", "https://m.facebook.com", url)
+    except Exception:
+        return url
+
 async def _try_extract_comments_mbasic(context, url: str, task_logger: TaskLogger) -> Optional[str]:
     mbasic_url = _to_mbasic_url(url)
     task_logger.info(f"Fallback: trying mbasic for comments: {mbasic_url}")
@@ -106,6 +112,31 @@ async def _try_extract_comments_mbasic(context, url: str, task_logger: TaskLogge
         return None
     except Exception as e:
         task_logger.warning(f"Fallback mbasic: error extracting comments: {e}")
+        return None
+    finally:
+        try:
+            await page2.close()
+        except Exception:
+            pass
+
+async def _try_extract_comments_mobile(context, url: str, task_logger: TaskLogger) -> Optional[str]:
+    m_url = _to_m_url(url)
+    task_logger.info(f"Fallback: trying m.facebook for comments: {m_url}")
+    page2 = await context.new_page()
+    try:
+        await page2.goto(m_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(get_random_delay(2, 4))
+        body_text = await page2.inner_text("body")
+        count = _extract_comments_count_from_text(body_text)
+        if count:
+            task_logger.info(f"Fallback m.facebook: comments={count}")
+            return count
+        return None
+    except PlaywrightTimeoutError:
+        task_logger.warning("Fallback m.facebook: navigation timed out")
+        return None
+    except Exception as e:
+        task_logger.warning(f"Fallback m.facebook: error extracting comments: {e}")
         return None
     finally:
         try:
@@ -359,6 +390,9 @@ async def run_scraper(task_id: str, url: str):
             await send_webhook(result, task_logger)
             return
 
+        # Init scraping accumulator early (used by diagnostic + parsing)
+        scraped_data = {}
+
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
 
@@ -395,7 +429,6 @@ async def run_scraper(task_id: str, url: str):
 
         # ===== PARSING LOGIC =====
         task_logger.info("Parsing page content...")
-        scraped_data = {}
 
         # --- LAYER 1: OG Meta Tags (most reliable) ---
         task_logger.info("Extracting OG meta tags...")
@@ -671,15 +704,25 @@ async def run_scraper(task_id: str, url: str):
         except Exception as e:
             task_logger.warning(f"Page text extraction error: {e}")
 
-        # --- LAYER 5.5: mbasic fallback for comments count ---
-        # If Facebook serves a JS shell / restricted view on www, mbasic sometimes still reveals counts.
+        # --- LAYER 5.5: mobile fallbacks for comments count ---
+        # If Facebook serves a JS shell / restricted view on www, mbasic/m can still reveal counts.
         if not scraped_data.get("comments"):
             try:
-                mbasic_comments = await _try_extract_comments_mbasic(context, url, task_logger)
+                target_url_for_fallback = scraped_data.get("diagnostic_final_url") or page.url or url
+                mbasic_comments = await _try_extract_comments_mbasic(context, target_url_for_fallback, task_logger)
                 if mbasic_comments:
                     scraped_data["comments"] = mbasic_comments
             except Exception as e:
                 task_logger.warning(f"Fallback mbasic comments error: {e}")
+
+        if not scraped_data.get("comments"):
+            try:
+                target_url_for_fallback = scraped_data.get("diagnostic_final_url") or page.url or url
+                mobile_comments = await _try_extract_comments_mobile(context, target_url_for_fallback, task_logger)
+                if mobile_comments:
+                    scraped_data["comments"] = mobile_comments
+            except Exception as e:
+                task_logger.warning(f"Fallback m.facebook comments error: {e}")
 
         # --- LAYER 6: DOM element fallbacks ---
         # Caption from visible text (if OG description didn't capture it)
@@ -778,6 +821,7 @@ async def run_scraper(task_id: str, url: str):
             and not final_data.get("description")
             and not final_data.get("video_url")
             and not final_data.get("image")
+            and not final_data.get("comments")
         )
         if only_page_title:
             task_logger.error("Facebook returned a generic shell page (no OG tags / no content). Marking as blocked.")
