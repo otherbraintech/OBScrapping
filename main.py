@@ -101,6 +101,11 @@ def _normalize_count(value: Optional[str]) -> Optional[int]:
     if not s:
         return None
     s = s.replace(" ", "")
+    # Handle Spanish format like "5,5mil" / "5mil"
+    m_mil = re.match(r"^(\d+(?:[\.,]\d+)?)mil$", s, re.IGNORECASE)
+    if m_mil:
+        num = float(m_mil.group(1).replace(",", "."))
+        return int(num * 1000)
     # Handle 1.2K / 1,2K and 3M / 3,4M
     m = re.match(r"^(\d+(?:[\.,]\d+)?)\s*([KkMm])$", s)
     if m:
@@ -149,6 +154,36 @@ def _extract_comments_count_from_html(html: str) -> Optional[str]:
         r'"comments"\s*:\s*\{[^\}]{0,500}?"total_count"\s*:\s*(\d+)',
         r'"commentsCount"\s*:\s*(\d+)',
         r'"commentCount"\s*:\s*(\d+)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return None
+
+def _extract_reactions_count_from_html(html: str) -> Optional[str]:
+    if not html:
+        return None
+    patterns = [
+        r'"reaction_count"\s*:\s*(\d+)',
+        r'"reactionCount"\s*:\s*(\d+)',
+        r'"i18n_reaction_count"\s*:\s*\{[^\}]{0,200}?"count"\s*:\s*(\d+)',
+    ]
+    for pat in patterns:
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return None
+
+def _extract_views_count_from_html(html: str) -> Optional[str]:
+    if not html:
+        return None
+    patterns = [
+        r'"play_count"\s*:\s*(\d+)',
+        r'"view_count"\s*:\s*(\d+)',
+        r'"viewCount"\s*:\s*(\d+)',
+        r'"video_view_count"\s*:\s*(\d+)',
+        r'"videoViewCount"\s*:\s*(\d+)',
     ]
     for pat in patterns:
         m = re.search(pat, html)
@@ -818,6 +853,26 @@ async def run_scraper(
             except Exception as e:
                 task_logger.warning(f"Embedded HTML comments extraction error: {e}")
 
+        # --- LAYER 5.3: Embedded JSON/HTML patterns for reactions/views ---
+        if page_html:
+            if not scraped_data.get("reactions"):
+                try:
+                    embedded_reactions = _extract_reactions_count_from_html(page_html)
+                    if embedded_reactions:
+                        scraped_data["reactions"] = embedded_reactions
+                        task_logger.info(f"Embedded HTML extraction: reactions={embedded_reactions}")
+                except Exception as e:
+                    task_logger.warning(f"Embedded HTML reactions extraction error: {e}")
+
+            if not scraped_data.get("views"):
+                try:
+                    embedded_views = _extract_views_count_from_html(page_html)
+                    if embedded_views:
+                        scraped_data["views"] = embedded_views
+                        task_logger.info(f"Embedded HTML extraction: views={embedded_views}")
+                except Exception as e:
+                    task_logger.warning(f"Embedded HTML views extraction error: {e}")
+
         # --- LAYER 5.5: mobile fallbacks for comments count ---
         # If Facebook serves a JS shell / restricted view on www, mbasic/m can still reveal counts.
         if not scraped_data.get("comments"):
@@ -901,6 +956,10 @@ async def run_scraper(
         
         comments_raw = scraped_data.get("comments")
         comments_count = _normalize_count(comments_raw)
+        reactions_raw = scraped_data.get("reactions")
+        reactions_count = _normalize_count(reactions_raw)
+        views_raw = scraped_data.get("views")
+        views_count = _normalize_count(views_raw)
 
         if WEBHOOK_INCLUDE_EXTRACTED:
             extracted_data = _summarize_for_webhook(scraped_data)
@@ -916,12 +975,16 @@ async def run_scraper(
             "video_type": scraped_data.get("og_video_type"),
             "video_duration_seconds": scraped_data.get("video_duration_seconds"),
             "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
-            "reactions": scraped_data.get("reactions"),
+            "reactions": reactions_raw,
+            "reactions_count": reactions_count,
+            "reactions_raw": reactions_raw,
             "shares": scraped_data.get("shares"),
             "comments": comments_raw,
             "comments_count": comments_count,
             "comments_raw": comments_raw,
-            "views": scraped_data.get("views"),
+            "views": views_raw,
+            "views_count": views_count,
+            "views_raw": views_raw,
             "post_date": scraped_data.get("post_date"),
             "user_link": scraped_data.get("user_link"),
             "canonical_url": scraped_data.get("og_url"),

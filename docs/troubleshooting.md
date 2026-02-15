@@ -229,6 +229,55 @@ Error connecting to proxy: Connection refused
 1. Aumentá memoria del container en EasyPanel (mínimo 512MB)
 2. Limitá requests concurrentes (actualmente: 1 a la vez)
 
+### 9. "No aparece comments / comments_count"
+
+**Síntomas:**
+
+- El webhook devuelve `reactions` y `shares`, pero `comments` / `comments_count` no aparece.
+- En algunos casos el título es "Facebook" y `og_tags_found` puede ser 0.
+
+**Por qué pasa:**
+
+- Facebook no siempre incluye el conteo de comentarios en `og:title`.
+- El conteo puede venir en JSON embebido dentro del HTML (no necesariamente como texto visible).
+- A veces `www.facebook.com` devuelve una "shell page" y hay que buscar el conteo en otras variantes (mobile).
+
+**Qué hace el scraper ahora (capas para comentarios):**
+
+- **Regex sobre texto visible** del `body` buscando `"X comments"` / `"X comentarios"`.
+- **Extracción desde HTML crudo** buscando patrones JSON como:
+  - `"total_comment_count": 123`
+  - `"comment_count": 123`
+  - `"comments": { ... "total_count": 123 ... }`
+- **Fallback mobile** cuando no aparece en `www`:
+  - intenta `mbasic.facebook.com`
+  - luego intenta `m.facebook.com`
+
+**Salida recomendada:**
+
+- Usá `comments_count` (entero) en vez de `comments`.
+- `comments_raw` mantiene el valor original si viene abreviado.
+
+**Cómo pedir data cruda para diagnosticar (útil para ajustar regex/selectores):**
+
+En el POST a `/scrape` podés mandar:
+
+```json
+{
+  "url": "https://www.facebook.com/share/r/...",
+  "debug_raw": true,
+  "raw_snippet_len": 20000,
+  "extra_wait_seconds": 10
+}
+```
+
+Esto agrega al webhook snippets (recortados) como:
+
+- `data.extracted_data.raw_html_snippet`
+- `data.extracted_data.raw_body_text_snippet`
+
+**Nota:** el scraper también envía `data.extracted_data` (resumido) para que puedas manipular/inspeccionar todo en n8n.
+
 ## Diagnostic Checklist
 
 Cuando algo no funciona, seguí estos pasos:
