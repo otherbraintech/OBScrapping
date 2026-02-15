@@ -66,6 +66,53 @@ class TaskLogger(logging.LoggerAdapter):
 def get_random_delay(min_seconds=10.0, max_seconds=30.0):
     return random.uniform(min_seconds, max_seconds)
 
+def _extract_comments_count_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    patterns = [
+        r"view\s+all\s+([\d.,]+)\s*comments?",
+        r"ver\s+los\s+([\d.,]+)\s*comentarios",
+        r"([\d.,]+)\s*comments?",
+        r"([\d.,]+)\s*comentarios",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+def _to_mbasic_url(url: str) -> str:
+    # Keep it simple: mbasic often gives a more static HTML. Let Facebook redirect if needed.
+    try:
+        return re.sub(r"^https?://(www\.)?facebook\.com", "https://mbasic.facebook.com", url)
+    except Exception:
+        return url
+
+async def _try_extract_comments_mbasic(context, url: str, task_logger: TaskLogger) -> Optional[str]:
+    mbasic_url = _to_mbasic_url(url)
+    task_logger.info(f"Fallback: trying mbasic for comments: {mbasic_url}")
+    page2 = await context.new_page()
+    try:
+        await page2.goto(mbasic_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(get_random_delay(2, 4))
+        body_text = await page2.inner_text("body")
+        count = _extract_comments_count_from_text(body_text)
+        if count:
+            task_logger.info(f"Fallback mbasic: comments={count}")
+            return count
+        return None
+    except PlaywrightTimeoutError:
+        task_logger.warning("Fallback mbasic: navigation timed out")
+        return None
+    except Exception as e:
+        task_logger.warning(f"Fallback mbasic: error extracting comments: {e}")
+        return None
+    finally:
+        try:
+            await page2.close()
+        except Exception:
+            pass
+
 async def simulate_human_behavior(page, task_logger):
     """Simulates scrolling and mouse movements to load dynamic content."""
     task_logger.info("Simulating human behavior (scrolling)...")
@@ -623,6 +670,16 @@ async def run_scraper(task_id: str, url: str):
                     scraped_data["shares"] = m.group(1)
         except Exception as e:
             task_logger.warning(f"Page text extraction error: {e}")
+
+        # --- LAYER 5.5: mbasic fallback for comments count ---
+        # If Facebook serves a JS shell / restricted view on www, mbasic sometimes still reveals counts.
+        if not scraped_data.get("comments"):
+            try:
+                mbasic_comments = await _try_extract_comments_mbasic(context, url, task_logger)
+                if mbasic_comments:
+                    scraped_data["comments"] = mbasic_comments
+            except Exception as e:
+                task_logger.warning(f"Fallback mbasic comments error: {e}")
 
         # --- LAYER 6: DOM element fallbacks ---
         # Caption from visible text (if OG description didn't capture it)
