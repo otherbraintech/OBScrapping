@@ -53,3 +53,19 @@ Once deployed, you will get a public URL (e.g., `https://my-scraper.up.railway.a
 
 **Update your n8n workflow:**
 Change the HTTP Request URL from `http://127.0.0.1:8000/scrape` to `https://my-scraper.up.railway.app/scrape`.
+
+---
+
+## 🔧 Troubleshooting
+
+### "No such image" Error (EasyPanel)
+
+If the deployment fails with `No such image: easypanel/intelexia-labs/obscrapping:latest`, it means the **Build Phase failed**.
+
+**Common Cause: Typo in Dockerfile Path**
+If the Build Log says `failed to read dockerfile: open Dockefile...`:
+
+1.  Go to **Project -> Services -> App -> Build**.
+2.  Find **Docker File Path**.
+3.  Change it from `Dockefile` to `Dockerfile`.
+4.  Click **Save** and then **Rebuild**.
