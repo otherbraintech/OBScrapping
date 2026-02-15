@@ -320,6 +320,9 @@ async def run_scraper(task_id: str, url: str):
             current_url = page.url
             current_title = await page.title()
             page_html = await page.content()
+            scraped_data["diagnostic_final_url"] = current_url
+            scraped_data["diagnostic_page_title"] = current_title
+            scraped_data["diagnostic_html_length"] = len(page_html)
             
             task_logger.info(f"DIAGNOSTIC - Final URL: {current_url}")
             task_logger.info(f"DIAGNOSTIC - Page Title: {current_title}")
@@ -369,6 +372,7 @@ async def run_scraper(task_id: str, url: str):
                 task_logger.warning(f"Error reading {tag}: {e}")
         
         task_logger.info(f"Found {og_found_count} OG meta tags total")
+        scraped_data["diagnostic_og_tags_found"] = og_found_count
 
         # Also grab standard meta description
         try:
@@ -699,9 +703,32 @@ async def run_scraper(task_id: str, url: str):
             "canonical_url": scraped_data.get("og_url"),
             "content_type": scraped_data.get("og_type"),
             "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]},
+            "diagnostic": {
+                "final_url": scraped_data.get("diagnostic_final_url") or page.url,
+                "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
+                "html_length": scraped_data.get("diagnostic_html_length"),
+                "og_tags_found": scraped_data.get("diagnostic_og_tags_found"),
+            },
         }
         # Remove None values for cleaner output
         final_data = {k: v for k, v in final_data.items() if v is not None}
+        if "diagnostic" in final_data and isinstance(final_data["diagnostic"], dict):
+            final_data["diagnostic"] = {k: v for k, v in final_data["diagnostic"].items() if v is not None}
+
+        only_page_title = (
+            final_data.get("raw_og_data") == {"page_title": "Facebook"}
+            and not final_data.get("caption")
+            and not final_data.get("description")
+            and not final_data.get("video_url")
+            and not final_data.get("image")
+        )
+        if only_page_title:
+            task_logger.error("Facebook returned a generic shell page (no OG tags / no content). Marking as blocked.")
+            result["status"] = "error"
+            result["error"] = "blocked_or_shell_page"
+            result["data"] = final_data
+            await send_webhook(result, task_logger)
+            return
         
         # Log all scraped data for debugging
         task_logger.info(f"Final scraped data keys: {list(scraped_data.keys())}")
