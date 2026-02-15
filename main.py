@@ -260,6 +260,19 @@ async def run_scraper(task_id: str, url: str):
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
 
+        # === DIAGNOSTIC LOGGING ===
+        current_url = page.url
+        current_title = await page.title()
+        page_html = await page.content()
+        task_logger.info(f"DIAGNOSTIC - Final URL: {current_url}")
+        task_logger.info(f"DIAGNOSTIC - Page Title: {current_title}")
+        task_logger.info(f"DIAGNOSTIC - HTML Length: {len(page_html)} bytes")
+        task_logger.info(f"DIAGNOSTIC - HTML Preview: {page_html[:500]}")
+        if "checkpoint" in current_url or "login" in current_url:
+            task_logger.error(f"Facebook redirected to security page: {current_url}")
+        if len(page_html) < 5000:
+            task_logger.warning(f"Short HTML ({len(page_html)} bytes) - possible block")
+
         # ===== PARSING LOGIC =====
         task_logger.info("Parsing page content...")
         scraped_data = {}
