@@ -28,6 +28,8 @@ if not WEBHOOK_URL:
 WEBHOOK_INCLUDE_EXTRACTED = os.getenv("WEBHOOK_INCLUDE_EXTRACTED", "1") == "1"
 WEBHOOK_EXTRACTED_MAX_LIST_ITEMS = int(os.getenv("WEBHOOK_EXTRACTED_MAX_LIST_ITEMS", "200"))
 WEBHOOK_EXTRACTED_MAX_STR_LEN = int(os.getenv("WEBHOOK_EXTRACTED_MAX_STR_LEN", "2000"))
+WEBHOOK_DUMP_MAX_LIST_ITEMS = int(os.getenv("WEBHOOK_DUMP_MAX_LIST_ITEMS", "800"))
+WEBHOOK_DUMP_MAX_STR_LEN = int(os.getenv("WEBHOOK_DUMP_MAX_STR_LEN", "12000"))
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -67,6 +69,7 @@ class ScrapeRequest(BaseModel):
     debug_raw: Optional[bool] = False
     raw_snippet_len: Optional[int] = 5000
     extra_wait_seconds: Optional[float] = 0.0
+    dump_all: Optional[bool] = False
 
 class ScrapeTaskResponse(BaseModel):
     status: str
@@ -160,6 +163,29 @@ def _summarize_for_webhook(value: Any) -> Any:
     if len(s) <= WEBHOOK_EXTRACTED_MAX_STR_LEN:
         return s
     return s[:WEBHOOK_EXTRACTED_MAX_STR_LEN] + "..."
+
+def _dump_for_webhook(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if len(value) <= WEBHOOK_DUMP_MAX_STR_LEN:
+            return value
+        return value[:WEBHOOK_DUMP_MAX_STR_LEN] + "..."
+    if isinstance(value, (int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {k: _dump_for_webhook(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+        sliced = items[:WEBHOOK_DUMP_MAX_LIST_ITEMS]
+        summarized = [_dump_for_webhook(v) for v in sliced]
+        if len(items) > WEBHOOK_DUMP_MAX_LIST_ITEMS:
+            summarized.append({"_truncated": len(items) - WEBHOOK_DUMP_MAX_LIST_ITEMS})
+        return summarized
+    s = str(value)
+    if len(s) <= WEBHOOK_DUMP_MAX_STR_LEN:
+        return s
+    return s[:WEBHOOK_DUMP_MAX_STR_LEN] + "..."
 
 def _extract_comments_count_from_html(html: str) -> Optional[str]:
     if not html:
@@ -423,6 +449,7 @@ async def run_scraper(
     debug_raw: bool = False,
     raw_snippet_len: int = 5000,
     extra_wait_seconds: float = 0.0,
+    dump_all: bool = False,
 ):
     task_logger = TaskLogger(logger, {"task_id": task_id})
     task_logger.info(f"Starting scrape for URL: {url}")
@@ -1196,6 +1223,11 @@ async def run_scraper(
         else:
             extracted_data = None
 
+        if dump_all:
+            scrape_dump = _dump_for_webhook(scraped_data)
+        else:
+            scrape_dump = None
+
         image_primary = scraped_data.get("og_image")
         images_list = scraped_data.get("images") if isinstance(scraped_data.get("images"), list) else None
         if not image_primary and images_list:
@@ -1227,80 +1259,80 @@ async def run_scraper(
             "content_type": scraped_data.get("og_type"),
             "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]},
             "extracted_data": extracted_data,
+            "scrape_dump": scrape_dump,
             "diagnostic": {
                 "final_url": scraped_data.get("diagnostic_final_url") or page.url,
                 "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
-                "html_length": scraped_data.get("diagnostic_html_length"),
+                "html_length": scraped_data.get("diagnostic_html_length") or (len(page_html) if page_html else None),
                 "og_tags_found": scraped_data.get("diagnostic_og_tags_found"),
             },
         }
         # Remove None values for cleaner output
         final_data = {k: v for k, v in final_data.items() if v is not None}
-        if "diagnostic" in final_data and isinstance(final_data["diagnostic"], dict):
-            final_data["diagnostic"] = {k: v for k, v in final_data["diagnostic"].items() if v is not None}
 
-        only_page_title = (
-            final_data.get("raw_og_data") == {"page_title": "Facebook"}
-            and not final_data.get("caption")
-            and not final_data.get("description")
-            and not final_data.get("video_url")
-            and not final_data.get("image")
-            and not final_data.get("comments")
-        )
-        if only_page_title:
-            task_logger.error("Facebook returned a generic shell page (no OG tags / no content). Marking as blocked.")
-            result["status"] = "error"
-            result["error"] = "blocked_or_shell_page"
-            result["data"] = final_data
-            await send_webhook(result, task_logger)
-            return
-        
-        # Log all scraped data for debugging
-        task_logger.info(f"Final scraped data keys: {list(scraped_data.keys())}")
-        task_logger.info(f"Final output data keys: {list(final_data.keys())}")
-        if final_data.get("raw_og_data"):
-            task_logger.info(f"Raw OG data: {final_data['raw_og_data']}")
-        else:
-            task_logger.warning("No raw_og_data found - this indicates no OG tags were extracted")
+only_page_title = (
+    final_data.get("raw_og_data") == {"page_title": "Facebook"}
+    and not final_data.get("caption")
+    and not final_data.get("description")
+    and not final_data.get("video_url")
+    and not final_data.get("image")
+    and not final_data.get("comments")
+)
+if only_page_title:
+    task_logger.error("Facebook returned a generic shell page (no OG tags / no content). Marking as blocked.")
+    result["status"] = "error"
+    result["error"] = "blocked_or_shell_page"
+    result["data"] = final_data
+    await send_webhook(result, task_logger)
+    return
 
-        result["data"] = final_data
-        result["status"] = "success"
-        
-        task_logger.info("Scraping completed successfully.")
+# Log all scraped data for debugging
+task_logger.info(f"Final scraped data keys: {list(scraped_data.keys())}")
+task_logger.info(f"Final output data keys: {list(final_data.keys())}")
+if final_data.get("raw_og_data"):
+    task_logger.info(f"Raw OG data: {final_data['raw_og_data']}")
+else:
+    task_logger.warning("No raw_og_data found - this indicates no OG tags were extracted")
 
-    except Exception as e:
-        task_logger.error(f"Fatal scraping error: {e}", exc_info=True)
-        result["status"] = "error"
-        result["error"] = str(e)
-    finally:
-        # Cleanup
-        if context:
-            await context.close()
-        if browser:
-            await browser.close()
-        if playwright:
-            await playwright.stop()
-        
-        # Send Webhook
-        await send_webhook(result, task_logger)
+result["data"] = final_data
+result["status"] = "success"
+
+task_logger.info("Scraping completed successfully.")
+
+except Exception as e:
+    task_logger.error(f"Fatal scraping error: {e}", exc_info=True)
+    result["status"] = "error"
+    result["error"] = str(e)
+finally:
+    # Cleanup
+    if context:
+        await context.close()
+    if browser:
+        await browser.close()
+    if playwright:
+        await playwright.stop()
+
+    # Send Webhook
+    await send_webhook(result, task_logger)
 
 # --- FastAPI App ---
 app = FastAPI(title="Minimal FB Scraper")
 
-@app.post("/scrape", status_code=202, response_model=ScrapeTaskResponse)
+@app.post("/scrape", response_model=ScrapeTaskResponse)
 async def scrape_endpoint(request: ScrapeRequest, background_tasks: BackgroundTasks):
     task_id = str(uuid.uuid4())
-    
+
     # Add background task
     background_tasks.add_task(
         run_scraper,
         task_id,
         str(request.url),
-        bool(request.debug_raw),
-        int(request.raw_snippet_len or 0),
-        float(request.extra_wait_seconds or 0.0),
+        request.debug_raw or False,
+        request.raw_snippet_len or 5000,
+        request.extra_wait_seconds or 0.0,
+        request.dump_all or False,
     )
-    
+
     return {
         "status": "accepted",
         "task_id": task_id,
