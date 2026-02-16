@@ -1114,18 +1114,34 @@ async def run_scraper(
         scraped_data["diagnostic_graphql_matches"] = graphql_matches
         scraped_data["diagnostic_graphql_errors"] = graphql_errors
         
-        # DEBUG: Scan for view count contexts in both HTML and snippets
-        view_contexts = []
-        if page_html:
-            view_contexts.extend(_search_context_around_keyword(page_html, "view_count"))
-            view_contexts.extend(_search_context_around_keyword(page_html, "play_count"))
-            view_contexts.extend(_search_context_around_keyword(page_html, "VideoViewCount"))
-        
-        for snippet in graphql_snippets:
-            view_contexts.extend(_search_context_around_keyword(snippet, "view_count"))
-            view_contexts.extend(_search_context_around_keyword(snippet, "play_count"))
-            view_contexts.extend(_search_context_around_keyword(snippet, "VideoViewCount"))
-            
+        # DEBUG: Scan for ANY count pattern to find the hidden key
+        try:
+            if page_html:
+                # Find any key ending in Count/count with a number
+                # Limit to first 50 matches to avoid bloat
+                count_matches = list(re.finditer(r'"(\w*[cC]ount)"\s*:\s*(\d+|"[^"]+")', page_html))
+                interesting_counts = []
+                for m in count_matches:
+                    k = m.group(1)
+                    v = m.group(2)
+                    if any(x in k.lower() for x in ["pixel", "byte", "char", "word", "line"]): 
+                        continue
+                    interesting_counts.append(f"{k}:{v}")
+                    if len(interesting_counts) >= 50:
+                        break
+                scraped_data["diagnostic_all_counts"] = interesting_counts
+
+                # Specific Context Scanning
+                view_contexts = []
+                # Known anchors
+                for kw in ["reaction_count", "comment_count", "share_count", "view_count", "play_count", "video_view_count"]:
+                     view_contexts.extend(_search_context_around_keyword(page_html, kw))
+                
+                if view_contexts:
+                    scraped_data["diagnostic_view_context"] = view_contexts[:20]
+        except Exception as e:
+            scraped_data["diagnostic_error"] = str(e)
+
         if view_contexts:
             scraped_data["diagnostic_view_context"] = view_contexts[:10]
 
