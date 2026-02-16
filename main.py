@@ -594,8 +594,6 @@ async def run_scraper(
                     
                     # Also skip if no content-length but seems like a stream? 
                     # We will try to read text.
-                except:
-                    pass
                 except Exception:
                     pass
 
