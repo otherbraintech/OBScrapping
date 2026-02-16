@@ -78,7 +78,7 @@ class ScrapeTaskResponse(BaseModel):
     task_id: str
     message: str
 
-# --- Helper Functions ---
+# --- Helper Functions ---Ñ
 class TaskLogger(logging.LoggerAdapter):
     def process(self, msg, kwargs):
         return f"[{self.extra.get('task_id', 'unknown')}] {msg}", kwargs
@@ -1123,17 +1123,20 @@ async def run_scraper(
         scraped_data["diagnostic_graphql_matches"] = graphql_matches
         scraped_data["diagnostic_graphql_errors"] = graphql_errors
         
-        # DEBUG: Scan for ANY count pattern to find the hidden key
+        scraped_data["diagnostic_graphql_errors"] = graphql_errors
+        
+        # DEBUG: Scan for ANY key containing 'view' or 'play' or 'count'
         try:
             if page_html:
-                # Find any key ending in Count/count with a number
-                # Limit to first 50 matches to avoid bloat
-                count_matches = list(re.finditer(r'"(\w*[cC]ount)"\s*:\s*(\d+|"[^"]+")', page_html))
+                # Expanded regex: look for keys with 'view', 'play', or ending in 'count'
+                # r'"(\w*(?:view|play|count)\w*)"\s*:\s*(\d+|"[^"]+")'
+                # We use re.IGNORECASE to catch View/Play
+                count_matches = list(re.finditer(r'"(\w*(?:view|play|count)\w*)"\s*:\s*(\d+|"[^"]+")', page_html, re.IGNORECASE))
                 interesting_counts = []
                 for m in count_matches:
                     k = m.group(1)
                     v = m.group(2)
-                    if any(x in k.lower() for x in ["pixel", "byte", "char", "word", "line"]): 
+                    if any(x in k.lower() for x in ["pixel", "byte", "char", "word", "line", "width", "height", "loop"]): 
                         continue
                     interesting_counts.append(f"{k}:{v}")
                     if len(interesting_counts) >= 50:
@@ -1142,8 +1145,8 @@ async def run_scraper(
 
                 # Specific Context Scanning
                 view_contexts = []
-                # Known anchors
-                for kw in ["reaction_count", "comment_count", "share_count", "view_count", "play_count", "video_view_count"]:
+                # Known anchors + potential view keys
+                for kw in ["reaction_count", "comment_count", "share_count", "view", "play", "video_view"]:
                      view_contexts.extend(_search_context_around_keyword(page_html, kw))
                 
                 if view_contexts:
