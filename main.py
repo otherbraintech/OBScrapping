@@ -477,7 +477,12 @@ async def run_scraper(
 ):
     task_logger = logging.getLogger(f"fb_scraper.{task_id}")
     task_logger.info(f"Starting scraper for {url}")
-    task_logger.info(f"Parameters: debug_raw={debug_raw}, raw_snippet_len={raw_snippet_len}, extra_wait_seconds={extra_wait_seconds}, dump_all={dump_all}")
+    task_logger.info(f"PARAMETERS RECEIVED: debug_raw={debug_raw}, raw_snippet_len={raw_snippet_len}, extra_wait_seconds={extra_wait_seconds}, dump_all={dump_all}")
+    
+    # FORCE DUMP ALL FOR DEBUGGING - REMOVE LATER
+    if not dump_all:
+        task_logger.warning("FORCING dump_all=True FOR DEBUGGING")
+        dump_all = True
 
     result = {
         "task_id": task_id,
