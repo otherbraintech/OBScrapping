@@ -30,6 +30,17 @@ WEBHOOK_EXTRACTED_MAX_LIST_ITEMS = int(os.getenv("WEBHOOK_EXTRACTED_MAX_LIST_ITE
 WEBHOOK_EXTRACTED_MAX_STR_LEN = int(os.getenv("WEBHOOK_EXTRACTED_MAX_STR_LEN", "2000"))
 WEBHOOK_DUMP_MAX_LIST_ITEMS = int(os.getenv("WEBHOOK_DUMP_MAX_LIST_ITEMS", "800"))
 WEBHOOK_DUMP_MAX_STR_LEN = int(os.getenv("WEBHOOK_DUMP_MAX_STR_LEN", "12000"))
+
+# Facebook cookies for authenticated scraping (optional)
+FACEBOOK_COOKIES = os.getenv("FACEBOOK_COOKIES", "")
+if FACEBOOK_COOKIES:
+    try:
+        FACEBOOK_COOKIES_DICT = dict(item.split("=", 1) for item in FACEBOOK_COOKIES.split("; "))
+    except:
+        FACEBOOK_COOKIES_DICT = {}
+        logging.warning("Invalid FACEBOOK_COOKIES format. Expected: 'name1=value1; name2=value2'")
+else:
+    FACEBOOK_COOKIES_DICT = {}
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -533,23 +544,18 @@ async def run_scraper(
         else:
             task_logger.warning("No proxy configured - may be blocked by Cloudflare")
 
-        context = await browser.new_context(
-            user_agent=user_agent,
-            viewport=viewport,
-            proxy=proxy_config,
-            locale="en-US",
-            timezone_id="America/New_York",
-            device_scale_factor=random.choice([1, 1.5, 2]),
-            has_touch=random.choice([True, False]),
-            is_mobile=False # Desktop simulation usually better for stealth than mobile
-        )
-
-        page = await context.new_page()
-
-        # Apply stealth
-        await stealth_async(page)
-
-        # Capture GraphQL/XHR snippets (useful for views_count on reels/videos)
+        # Create browser context with optional Facebook cookies
+        context_options = {
+            "viewport": viewport,
+            "user_agent": user_agent
+        }
+        
+        if proxy_config:
+            context_options["proxy"] = proxy_config
+            
+        context = await browser.new_context(**context_options)
+        
+        # GraphQL tracking variables
         graphql_snippets: list[str] = []
         graphql_matches: int = 0
         graphql_errors: int = 0
