@@ -1270,50 +1270,50 @@ async def run_scraper(
         # Remove None values for cleaner output
         final_data = {k: v for k, v in final_data.items() if v is not None}
 
-only_page_title = (
-    final_data.get("raw_og_data") == {"page_title": "Facebook"}
-    and not final_data.get("caption")
-    and not final_data.get("description")
-    and not final_data.get("video_url")
-    and not final_data.get("image")
-    and not final_data.get("comments")
-)
-if only_page_title:
-    task_logger.error("Facebook returned a generic shell page (no OG tags / no content). Marking as blocked.")
-    result["status"] = "error"
-    result["error"] = "blocked_or_shell_page"
-    result["data"] = final_data
-    await send_webhook(result, task_logger)
-    return
+        only_page_title = (
+            final_data.get("raw_og_data") == {"page_title": "Facebook"}
+            and not final_data.get("caption")
+            and not final_data.get("description")
+            and not final_data.get("video_url")
+            and not final_data.get("image")
+            and not final_data.get("comments")
+        )
+        if only_page_title:
+            task_logger.error("Facebook returned a generic shell page (no OG tags / no content). Marking as blocked.")
+            result["status"] = "error"
+            result["error"] = "blocked_or_shell_page"
+            result["data"] = final_data
+            await send_webhook(result, task_logger)
+            return
 
-# Log all scraped data for debugging
-task_logger.info(f"Final scraped data keys: {list(scraped_data.keys())}")
-task_logger.info(f"Final output data keys: {list(final_data.keys())}")
-if final_data.get("raw_og_data"):
-    task_logger.info(f"Raw OG data: {final_data['raw_og_data']}")
-else:
-    task_logger.warning("No raw_og_data found - this indicates no OG tags were extracted")
+        # Log all scraped data for debugging
+        task_logger.info(f"Final scraped data keys: {list(scraped_data.keys())}")
+        task_logger.info(f"Final output data keys: {list(final_data.keys())}")
+        if final_data.get("raw_og_data"):
+            task_logger.info(f"Raw OG data: {final_data['raw_og_data']}")
+        else:
+            task_logger.warning("No raw_og_data found - this indicates no OG tags were extracted")
 
-result["data"] = final_data
-result["status"] = "success"
+        result["data"] = final_data
+        result["status"] = "success"
+        
+        task_logger.info("Scraping completed successfully.")
 
-task_logger.info("Scraping completed successfully.")
-
-except Exception as e:
-    task_logger.error(f"Fatal scraping error: {e}", exc_info=True)
-    result["status"] = "error"
-    result["error"] = str(e)
-finally:
-    # Cleanup
-    if context:
-        await context.close()
-    if browser:
-        await browser.close()
-    if playwright:
-        await playwright.stop()
-
-    # Send Webhook
-    await send_webhook(result, task_logger)
+    except Exception as e:
+        task_logger.error(f"Fatal scraping error: {e}", exc_info=True)
+        result["status"] = "error"
+        result["error"] = str(e)
+    finally:
+        # Cleanup
+        if context:
+            await context.close()
+        if browser:
+            await browser.close()
+        if playwright:
+            await playwright.stop()
+        
+        # Send Webhook
+        await send_webhook(result, task_logger)
 
 # --- FastAPI App ---
 app = FastAPI(title="Minimal FB Scraper")
