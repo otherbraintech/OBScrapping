@@ -454,8 +454,9 @@ async def run_scraper(
     extra_wait_seconds: float = 0.0,
     dump_all: bool = False,
 ):
-    task_logger = TaskLogger(logger, {"task_id": task_id})
-    task_logger.info(f"Starting scrape for URL: {url}")
+    task_logger = logging.getLogger(f"fb_scraper.{task_id}")
+    task_logger.info(f"Starting scraper for {url}")
+    task_logger.info(f"Parameters: debug_raw={debug_raw}, raw_snippet_len={raw_snippet_len}, extra_wait_seconds={extra_wait_seconds}, dump_all={dump_all}")
 
     result = {
         "task_id": task_id,
