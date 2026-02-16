@@ -494,20 +494,48 @@ async def run_scraper(
         graphql_snippets: list[str] = []
         graphql_matches: int = 0
         graphql_errors: int = 0
+        graphql_match_urls: list[str] = []
 
         async def _handle_response(response):
             try:
                 resp_url = response.url
                 if not resp_url:
                     return
-                if ("graphql" not in resp_url) and ("api/graphql" not in resp_url):
+
+                # Facebook often loads reel/video engagement via XHR/fetch endpoints that are not strictly GraphQL.
+                # Keep the existing diagnostic names, but broaden what we capture.
+                try:
+                    req = response.request
+                    resource_type = (req.resource_type or "").lower() if req else ""
+                except Exception:
+                    resource_type = ""
+
+                url_l = resp_url.lower()
+                looks_like_fb_api = any(k in url_l for k in [
+                    "graphql",
+                    "api/graphql",
+                    "/ajax/",
+                    "/api/",
+                    "/video/",
+                    "/reel/",
+                    "video_view_count",
+                    "play_count",
+                ])
+
+                if not looks_like_fb_api:
                     return
+                if resource_type and resource_type not in ("xhr", "fetch"):
+                    # Avoid collecting images/css/js etc.
+                    return
+
                 nonlocal graphql_matches
                 graphql_matches += 1
                 # Avoid unbounded growth
                 if len(graphql_snippets) >= 25:
                     return
                 try:
+                    if len(graphql_match_urls) < 25:
+                        graphql_match_urls.append(resp_url)
                     body = await response.body()
                     if not body:
                         return
@@ -1039,6 +1067,12 @@ async def run_scraper(
             try:
                 # Keep only a small sample to avoid huge payloads.
                 scraped_data["raw_graphql_snippets"] = [s[:2000] for s in graphql_snippets[:5]]
+            except Exception:
+                pass
+
+        if debug_raw and graphql_match_urls:
+            try:
+                scraped_data["raw_graphql_match_urls"] = graphql_match_urls[:10]
             except Exception:
                 pass
 
