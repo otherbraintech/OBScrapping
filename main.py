@@ -61,6 +61,8 @@ logger.info(
     f"max_list_items={WEBHOOK_EXTRACTED_MAX_LIST_ITEMS} max_str_len={WEBHOOK_EXTRACTED_MAX_STR_LEN}"
 )
 
+LOGIN_KEYWORDS = ["log in", "sign in", "iniciar sesión", "registrarse", "login", "checkpoint", "ingresar"]
+
 # --- Models ---
 class ScrapeRequest(BaseModel):
     url: HttpUrl
@@ -707,13 +709,13 @@ async def run_scraper(
             task_logger.info(f"Waiting extra {extra_wait_seconds} seconds for dynamic content...")
             await asyncio.sleep(extra_wait_seconds)
         
+        
         # Simulate human behavior to trigger lazy loading
         title = await page.title()
         content = await page.content()
         
-        login_keywords = ["log in", "sign in", "iniciar sesión", "registrarse", "login", "checkpoint"]
         is_login_wall = (
-            any(k in title.lower() for k in login_keywords) or 
+            any(k in title.lower() for k in LOGIN_KEYWORDS) or 
             len(content) < 2000 # Suspiciously short content
         )
 
