@@ -190,6 +190,27 @@ def _dump_for_webhook(value: Any) -> Any:
         return s
     return s[:WEBHOOK_DUMP_MAX_STR_LEN] + "..."
 
+def _search_context_around_keyword(text: str, keyword: str, context_len: int = 100, max_occurrences: int = 3) -> list[str]:
+    """Finds occurrences of keyword and returns surrounding context."""
+    if not text:
+        return []
+    results = []
+    start = 0
+    text_lower = text.lower()
+    keyword_lower = keyword.lower()
+    
+    while len(results) < max_occurrences:
+        idx = text_lower.find(keyword_lower, start)
+        if idx == -1:
+            break
+        s = max(0, idx - context_len)
+        e = min(len(text), idx + len(keyword) + context_len)
+        # Grab original text casing
+        snippet = text[s:e].replace("\n", " ")
+        results.append(snippet)
+        start = idx + len(keyword)
+    return results
+
 def _extract_comments_count_from_html(html: str) -> Optional[str]:
     if not html:
         return None
@@ -1098,6 +1119,22 @@ async def run_scraper(
         scraped_data["diagnostic_graphql_snippets_count"] = len(graphql_snippets)
         scraped_data["diagnostic_graphql_matches"] = graphql_matches
         scraped_data["diagnostic_graphql_errors"] = graphql_errors
+        
+        # DEBUG: Scan for view count contexts in both HTML and snippets
+        view_contexts = []
+        if page_html:
+            view_contexts.extend(_search_context_around_keyword(page_html, "view_count"))
+            view_contexts.extend(_search_context_around_keyword(page_html, "play_count"))
+            view_contexts.extend(_search_context_around_keyword(page_html, "VideoViewCount"))
+        
+        for snippet in graphql_snippets:
+            view_contexts.extend(_search_context_around_keyword(snippet, "view_count"))
+            view_contexts.extend(_search_context_around_keyword(snippet, "play_count"))
+            view_contexts.extend(_search_context_around_keyword(snippet, "VideoViewCount"))
+            
+        if view_contexts:
+            scraped_data["diagnostic_view_context"] = view_contexts[:10]
+
         
         # DEBUG: Always log snippets to see what we are getting
         for i, snip in enumerate(graphql_snippets):
