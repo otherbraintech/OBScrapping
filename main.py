@@ -104,8 +104,11 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas)",
-        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas)",
+        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|veces)",
+        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas|veces)",
+        r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|veces)",
+        r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
+        r"([\d.,]+)\s*million\s*(?:views?|plays?)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -537,6 +540,7 @@ async def run_scraper(
                 except Exception:
                     resource_type = ""
 
+                # Broader filter for potential API endpoints
                 url_l = resp_url.lower()
                 looks_like_fb_api = any(k in url_l for k in [
                     "graphql",
@@ -547,13 +551,27 @@ async def run_scraper(
                     "/reel/",
                     "video_view_count",
                     "play_count",
+                    "comment_count",
+                    "reaction_count"
                 ])
 
+                # If it looks like an API call, we take it regardless of reported resource_type
+                # because sometimes it's "other" or "document" (for iframes).
                 if not looks_like_fb_api:
                     return
-                if resource_type and resource_type not in ("xhr", "fetch"):
-                    # Avoid collecting images/css/js etc.
+
+                # Strict exclude for static assets
+                if resource_type in ("image", "media", "font", "stylesheet"):
                     return
+
+                # If the body is too large, skip it
+                try:
+                    # Quick check on content-length header if available
+                    cl = response.headers.get("content-length")
+                    if cl and int(cl) > 1_000_000: # Skip > 1MB
+                        return
+                except Exception:
+                    pass
 
                 nonlocal graphql_matches
                 graphql_matches += 1
