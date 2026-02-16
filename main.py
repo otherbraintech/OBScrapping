@@ -698,17 +698,11 @@ async def run_scraper(
 
         # Initial random wait
         await asyncio.sleep(get_random_delay(5, 10))
-        if extra_wait_seconds and extra_wait_seconds > 0:
-            task_logger.info(f"Extra wait requested: {extra_wait_seconds}s")
-            await asyncio.sleep(float(extra_wait_seconds))
-
-        # Check for blocking/login wall
-        content = await page.content()
-        content_lower = content.lower()
+        if extra_wait_seconds > 0:
+            task_logger.info(f"Waiting extra {extra_wait_seconds} seconds for dynamic content...")
+            await asyncio.sleep(extra_wait_seconds)
         
-        # Basic checks for login walls or blocks
-        login_keywords = ["log in to facebook", "inicia sesión", "sign up", "registrarse", "security check", "captcha"]
-        # Check against title and common login indicators
+        # Simulate human behavior to trigger lazy loading
         title = await page.title()
         
         is_login_wall = (
