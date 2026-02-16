@@ -1,11 +1,13 @@
 import asyncio
+import json
 import logging
-import random
-import uuid
 import os
+import random
+import re
+import html as _html
+import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any, List
-import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -82,11 +84,25 @@ def get_random_delay(min_seconds=10.0, max_seconds=30.0):
 def _extract_comments_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+
     patterns = [
         r"view\s+all\s+([\d.,]+)\s*comments?",
         r"ver\s+los\s+([\d.,]+)\s*comentarios",
         r"([\d.,]+)\s*comments?",
         r"([\d.,]+)\s*comentarios",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+def _extract_views_count_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    patterns = [
+        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas)",
+        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -212,6 +228,7 @@ def _extract_image_urls_from_html(html: str, limit: int = 20) -> list[str]:
     out: list[str] = []
     for url in candidates:
         # Basic cleanup
+        url = _html.unescape(url)
         url = url.split("\\u0026")[0].replace("\\/", "/")
         if "fbcdn.net" not in url:
             continue
@@ -256,6 +273,56 @@ async def _try_extract_comments_mbasic(context, url: str, task_logger: TaskLogge
         return None
     except Exception as e:
         task_logger.warning(f"Fallback mbasic: error extracting comments: {e}")
+        return None
+    finally:
+        try:
+            await page2.close()
+        except Exception:
+            pass
+
+async def _try_extract_views_mobile(context, url: str, task_logger: TaskLogger) -> Optional[str]:
+    m_url = _to_m_url(url)
+    task_logger.info(f"Fallback: trying m.facebook for views: {m_url}")
+    page2 = await context.new_page()
+    try:
+        await page2.goto(m_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(get_random_delay(2, 4))
+        body_text = await page2.inner_text("body")
+        v = _extract_views_count_from_text(body_text)
+        if v:
+            task_logger.info(f"Fallback m.facebook: views={v}")
+            return v
+        return None
+    except PlaywrightTimeoutError:
+        task_logger.warning("Fallback m.facebook: navigation timed out (views)")
+        return None
+    except Exception as e:
+        task_logger.warning(f"Fallback m.facebook: error extracting views: {e}")
+        return None
+    finally:
+        try:
+            await page2.close()
+        except Exception:
+            pass
+
+async def _try_extract_views_mbasic(context, url: str, task_logger: TaskLogger) -> Optional[str]:
+    mbasic_url = _to_mbasic_url(url)
+    task_logger.info(f"Fallback: trying mbasic for views: {mbasic_url}")
+    page2 = await context.new_page()
+    try:
+        await page2.goto(mbasic_url, wait_until="domcontentloaded", timeout=60000)
+        await asyncio.sleep(get_random_delay(2, 4))
+        body_text = await page2.inner_text("body")
+        v = _extract_views_count_from_text(body_text)
+        if v:
+            task_logger.info(f"Fallback mbasic: views={v}")
+            return v
+        return None
+    except PlaywrightTimeoutError:
+        task_logger.warning("Fallback mbasic: navigation timed out (views)")
+        return None
+    except Exception as e:
+        task_logger.warning(f"Fallback mbasic: error extracting views: {e}")
         return None
     finally:
         try:
@@ -425,6 +492,8 @@ async def run_scraper(
 
         # Capture GraphQL/XHR snippets (useful for views_count on reels/videos)
         graphql_snippets: list[str] = []
+        graphql_matches: int = 0
+        graphql_errors: int = 0
 
         async def _handle_response(response):
             try:
@@ -433,15 +502,25 @@ async def run_scraper(
                     return
                 if ("graphql" not in resp_url) and ("api/graphql" not in resp_url):
                     return
+                nonlocal graphql_matches
+                graphql_matches += 1
                 # Avoid unbounded growth
                 if len(graphql_snippets) >= 25:
                     return
-                txt = await response.text()
-                if not txt:
+                try:
+                    body = await response.body()
+                    if not body:
+                        return
+                    try:
+                        txt = body.decode("utf-8", errors="ignore")
+                    except Exception:
+                        txt = str(body)
+                    snippet = txt[:50000]
+                    graphql_snippets.append(snippet)
+                except Exception:
+                    nonlocal graphql_errors
+                    graphql_errors += 1
                     return
-                # Store a bounded snippet
-                snippet = txt[:50000]
-                graphql_snippets.append(snippet)
             except Exception:
                 return
 
@@ -571,6 +650,8 @@ async def run_scraper(
         # Init scraping accumulator early (used by diagnostic + parsing)
         scraped_data = {}
         scraped_data["diagnostic_graphql_snippets_count"] = 0
+        scraped_data["diagnostic_graphql_matches"] = 0
+        scraped_data["diagnostic_graphql_errors"] = 0
 
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
@@ -941,6 +1022,8 @@ async def run_scraper(
             pass
 
         scraped_data["diagnostic_graphql_snippets_count"] = len(graphql_snippets)
+        scraped_data["diagnostic_graphql_matches"] = graphql_matches
+        scraped_data["diagnostic_graphql_errors"] = graphql_errors
         if not scraped_data.get("views") and graphql_snippets:
             try:
                 for snippet in graphql_snippets:
@@ -958,6 +1041,25 @@ async def run_scraper(
                 scraped_data["raw_graphql_snippets"] = [s[:2000] for s in graphql_snippets[:5]]
             except Exception:
                 pass
+
+        # --- LAYER 5.6: mobile fallbacks for views count ---
+        if not scraped_data.get("views"):
+            try:
+                target_url_for_fallback = scraped_data.get("diagnostic_final_url") or page.url or url
+                mbasic_views = await _try_extract_views_mbasic(context, target_url_for_fallback, task_logger)
+                if mbasic_views:
+                    scraped_data["views"] = mbasic_views
+            except Exception as e:
+                task_logger.warning(f"Fallback mbasic views error: {e}")
+
+        if not scraped_data.get("views"):
+            try:
+                target_url_for_fallback = scraped_data.get("diagnostic_final_url") or page.url or url
+                mobile_views = await _try_extract_views_mobile(context, target_url_for_fallback, task_logger)
+                if mobile_views:
+                    scraped_data["views"] = mobile_views
+            except Exception as e:
+                task_logger.warning(f"Fallback m.facebook views error: {e}")
 
         if page_html and not scraped_data.get("images"):
             try:
