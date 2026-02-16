@@ -1097,6 +1097,11 @@ async def run_scraper(
         scraped_data["diagnostic_graphql_snippets_count"] = len(graphql_snippets)
         scraped_data["diagnostic_graphql_matches"] = graphql_matches
         scraped_data["diagnostic_graphql_errors"] = graphql_errors
+        
+        # DEBUG: Always log snippets to see what we are getting
+        for i, snip in enumerate(graphql_snippets):
+            task_logger.info(f"GRAPHQL SNIPPET #{i}: {snip[:500]}...")
+
         if not scraped_data.get("views") and graphql_snippets:
             try:
                 for snippet in graphql_snippets:
@@ -1108,12 +1113,10 @@ async def run_scraper(
             except Exception as e:
                 task_logger.warning(f"GraphQL views extraction error: {e}")
 
-        if debug_raw and graphql_snippets:
-            try:
-                # Keep only a small sample to avoid huge payloads.
-                scraped_data["raw_graphql_snippets"] = [s[:2000] for s in graphql_snippets[:5]]
-            except Exception:
-                pass
+        # ALWAYS include snippets for debugging now
+        if graphql_snippets:
+             scraped_data["raw_graphql_snippets"] = [s[:1000] for s in graphql_snippets[:3]]
+
 
         if debug_raw and graphql_match_urls:
             try:
