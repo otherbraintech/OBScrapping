@@ -562,43 +562,40 @@ async def run_scraper(
                     return
 
                 # Facebook often loads reel/video engagement via XHR/fetch endpoints that are not strictly GraphQL.
-                # Keep the existing diagnostic names, but broaden what we capture.
+                # CAPTURE EVERYTHING that isn't a static asset.
                 try:
                     req = response.request
                     resource_type = (req.resource_type or "").lower() if req else ""
                 except Exception:
                     resource_type = ""
 
-                # Broader filter for potential API endpoints
-                url_l = resp_url.lower()
-                looks_like_fb_api = any(k in url_l for k in [
-                    "graphql",
-                    "api/graphql",
-                    "/ajax/",
-                    "/api/",
-                    "/video/",
-                    "/reel/",
-                    "video_view_count",
-                    "play_count",
-                    "comment_count",
-                    "reaction_count"
-                ])
-
-                # If it looks like an API call, we take it regardless of reported resource_type
-                # because sometimes it's "other" or "document" (for iframes).
-                if not looks_like_fb_api:
+                # Static asset filter (Exclude strict)
+                if resource_type in ("image", "font", "stylesheet", "media", "other"):
+                   # Sometimes 'other' is useful, but often it's junk.
+                   # For reels, valid data is usually 'fetch', 'xhr', or 'document' (iframe)
+                   if resource_type == "media" or resource_type == "image" or resource_type == "font":
+                       return
+                
+                # Further filter by extension just in case
+                if any(resp_url.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".gif", ".css", ".woff", ".woff2", ".ico", ".mp4", ".mp3", ".webm"]):
                     return
 
-                # Strict exclude for static assets
-                if resource_type in ("image", "media", "font", "stylesheet"):
-                    return
+                # Filter by content-type if available
+                ct = (response.headers.get("content-type") or "").lower()
+                if "image/" in ct or "font/" in ct or "video/" in ct or "audio/" in ct:
+                     return
 
                 # If the body is too large, skip it
                 try:
                     # Quick check on content-length header if available
                     cl = response.headers.get("content-length")
-                    if cl and int(cl) > 1_000_000: # Skip > 1MB
+                    if cl and int(cl) > 2_000_000: # Skip > 2MB
                         return
+                    
+                    # Also skip if no content-length but seems like a stream? 
+                    # We will try to read text.
+                except:
+                    pass
                 except Exception:
                     pass
 
