@@ -709,7 +709,9 @@ async def run_scraper(
         
         # Simulate human behavior to trigger lazy loading
         title = await page.title()
+        content = await page.content()
         
+        login_keywords = ["log in", "sign in", "iniciar sesión", "registrarse", "login", "checkpoint"]
         is_login_wall = (
             any(k in title.lower() for k in login_keywords) or 
             len(content) < 2000 # Suspiciously short content
