@@ -278,6 +278,39 @@ Esto agrega al webhook snippets (recortados) como:
 
 **Nota:** el scraper también envía `data.extracted_data` (resumido) para que puedas manipular/inspeccionar todo en n8n.
 
+### 10. "No aparece views / views_count" (videos)
+
+**Síntomas:**
+
+- La publicación es video (`content_type` suele ser `video.other`), pero `views` / `views_count` no aparece.
+
+**Por qué pasa:**
+
+- Facebook no expone siempre el conteo de visualizaciones en OG tags.
+- El conteo puede venir en JSON embebido dentro del HTML y no como texto visible.
+- En algunos tipos de contenido Facebook simplemente no incluye un campo de views accesible desde HTML (o lo carga por requests internos).
+
+**Qué hace el scraper ahora:**
+
+- Intenta extraer `views` desde aria-labels / texto visible.
+- Si falta, intenta extraerlo desde el HTML crudo con patrones como `view_count`, `video_view_count`, `play_count`.
+
+**Salida recomendada:**
+
+- Usá `views_count` (entero) cuando exista.
+- `views_raw` mantiene el valor original.
+
+### 11. Posts con múltiples fotos (galerías)
+
+**Síntomas:**
+
+- `image` trae solo 1 URL aunque el post tenga varias fotos.
+
+**Qué hace el scraper ahora:**
+
+- Además de `image` (principal), intenta extraer `images` (lista) desde el HTML crudo.
+- La lista viene deduplicada y con un límite para no inflar el webhook.
+
 ## Diagnostic Checklist
 
 Cuando algo no funciona, seguí estos pasos:

@@ -180,16 +180,50 @@ def _extract_views_count_from_html(html: str) -> Optional[str]:
         return None
     patterns = [
         r'"play_count"\s*:\s*(\d+)',
+        r'"play_count"\s*:\s*"([^"]{1,20})"',
         r'"view_count"\s*:\s*(\d+)',
+        r'"view_count"\s*:\s*"([^"]{1,20})"',
         r'"viewCount"\s*:\s*(\d+)',
+        r'"viewCount"\s*:\s*"([^"]{1,20})"',
         r'"video_view_count"\s*:\s*(\d+)',
+        r'"video_view_count"\s*:\s*"([^"]{1,20})"',
         r'"videoViewCount"\s*:\s*(\d+)',
+        r'"videoViewCount"\s*:\s*"([^"]{1,20})"',
+        r'"playCount"\s*:\s*(\d+)',
+        r'"playCount"\s*:\s*"([^"]{1,20})"',
+        r'"videoPlayCount"\s*:\s*(\d+)',
+        r'"videoPlayCount"\s*:\s*"([^"]{1,20})"',
+        r'"i18n_view_count"\s*:\s*\{[^\}]{0,200}?"count"\s*:\s*(\d+)',
+        r'"i18n_view_count"\s*:\s*\{[^\}]{0,200}?"count"\s*:\s*"([^"]{1,20})"',
     ]
     for pat in patterns:
         m = re.search(pat, html)
         if m:
             return m.group(1)
     return None
+
+def _extract_image_urls_from_html(html: str, limit: int = 20) -> list[str]:
+    if not html:
+        return []
+    # Capture common fbcdn image URLs; keep it broad then dedupe.
+    # Note: HTML is large; keep regex efficient.
+    candidates = re.findall(r"https://scontent\.[^\s\"']+", html)
+    seen = set()
+    out: list[str] = []
+    for url in candidates:
+        # Basic cleanup
+        url = url.split("\\u0026")[0].replace("\\/", "/")
+        if "fbcdn.net" not in url:
+            continue
+        if not (".jpg" in url or ".png" in url or ".webp" in url):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+        if len(out) >= limit:
+            break
+    return out
 
 def _to_mbasic_url(url: str) -> str:
     # Keep it simple: mbasic often gives a more static HTML. Let Facebook redirect if needed.
@@ -388,6 +422,31 @@ async def run_scraper(
 
         # Apply stealth
         await stealth_async(page)
+
+        # Capture GraphQL/XHR snippets (useful for views_count on reels/videos)
+        graphql_snippets: list[str] = []
+
+        async def _handle_response(response):
+            try:
+                resp_url = response.url
+                if not resp_url:
+                    return
+                if ("graphql" not in resp_url) and ("api/graphql" not in resp_url):
+                    return
+                # Avoid unbounded growth
+                if len(graphql_snippets) >= 25:
+                    return
+                txt = await response.text()
+                if not txt:
+                    return
+                # Store a bounded snippet
+                snippet = txt[:50000]
+                graphql_snippets.append(snippet)
+            except Exception:
+                return
+
+        # Playwright event callbacks cannot be awaited directly
+        page.on("response", lambda r: asyncio.create_task(_handle_response(r)))
         
         # Inject Facebook cookies if provided (works with proxy for logged-in access)
         fb_c_user = os.getenv("FB_COOKIE_C_USER")
@@ -511,6 +570,7 @@ async def run_scraper(
 
         # Init scraping accumulator early (used by diagnostic + parsing)
         scraped_data = {}
+        scraped_data["diagnostic_graphql_snippets_count"] = 0
 
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
@@ -873,6 +933,40 @@ async def run_scraper(
                 except Exception as e:
                     task_logger.warning(f"Embedded HTML views extraction error: {e}")
 
+        # --- LAYER 5.35: GraphQL/XHR snippets (often contain view/play counts) ---
+        # Give a short moment for late responses to arrive.
+        try:
+            await asyncio.sleep(1)
+        except Exception:
+            pass
+
+        scraped_data["diagnostic_graphql_snippets_count"] = len(graphql_snippets)
+        if not scraped_data.get("views") and graphql_snippets:
+            try:
+                for snippet in graphql_snippets:
+                    v = _extract_views_count_from_html(snippet)
+                    if v:
+                        scraped_data["views"] = v
+                        task_logger.info(f"GraphQL extraction: views={v}")
+                        break
+            except Exception as e:
+                task_logger.warning(f"GraphQL views extraction error: {e}")
+
+        if debug_raw and graphql_snippets:
+            try:
+                # Keep only a small sample to avoid huge payloads.
+                scraped_data["raw_graphql_snippets"] = [s[:2000] for s in graphql_snippets[:5]]
+            except Exception:
+                pass
+
+        if page_html and not scraped_data.get("images"):
+            try:
+                images = _extract_image_urls_from_html(page_html, limit=20)
+                if images:
+                    scraped_data["images"] = images
+            except Exception as e:
+                task_logger.warning(f"Embedded HTML images extraction error: {e}")
+
         # --- LAYER 5.5: mobile fallbacks for comments count ---
         # If Facebook serves a JS shell / restricted view on www, mbasic/m can still reveal counts.
         if not scraped_data.get("comments"):
@@ -966,11 +1060,17 @@ async def run_scraper(
         else:
             extracted_data = None
 
+        image_primary = scraped_data.get("og_image")
+        images_list = scraped_data.get("images") if isinstance(scraped_data.get("images"), list) else None
+        if not image_primary and images_list:
+            image_primary = images_list[0]
+
         final_data = {
             "author": author,
             "caption": clean_caption,
             "description": description,
-            "image": scraped_data.get("og_image"),
+            "image": image_primary,
+            "images": images_list,
             "video_url": scraped_data.get("og_video_secure_url") or scraped_data.get("og_video_url") or scraped_data.get("og_video") or scraped_data.get("video_src"),
             "video_type": scraped_data.get("og_video_type"),
             "video_duration_seconds": scraped_data.get("video_duration_seconds"),
