@@ -1407,6 +1407,11 @@ async def run_scraper(
         description = scraped_data.get("og_description") or scraped_data.get("meta_description") or scraped_data.get("caption")
         clean_caption = scraped_data.get("clean_caption") or description
         
+        image_primary = scraped_data.get("og_image")
+        images_list = scraped_data.get("images") if isinstance(scraped_data.get("images"), list) else None
+        if not image_primary and images_list:
+            image_primary = images_list[0]
+
         comments_raw = scraped_data.get("comments")
         comments_count = _normalize_count(comments_raw)
         
@@ -1421,32 +1426,10 @@ async def run_scraper(
         shares_count = _normalize_count(shares_raw)
         
         # FINAL ENSURE: If views equals shares, one of them is likely a miscapture
-        # Usually 'visualizaciones' is views and 'veces compartido' is shares.
-        # If we have both as 26, it's suspicious.
         if views_count == shares_count and views_count is not None:
-             # If views_raw came from something with "compartido", it's shares.
              if views_raw and any(kw in str(views_raw).lower() for kw in ["compartido", "share"]):
                  views_count = None
                  task_logger.info("De-duplicating views vs shares: views looks like shares.")
-        
-        final_data = {
-            "author": author,
-            "caption": clean_caption,
-            "description": description,
-            "image": image_primary,
-            "images": images_list,
-            "video_url": scraped_data.get("og_video_secure_url") or scraped_data.get("og_video_url") or scraped_data.get("og_video") or scraped_data.get("video_src"),
-            "video_duration_seconds": scraped_data.get("video_duration_seconds"),
-            "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
-            "reactions_count": reactions_count,
-            "shares_count": shares_count,
-            "comments_count": comments_count,
-            "views_count": views_count,
-            "post_date": scraped_data.get("post_date"),
-            "user_link": scraped_data.get("user_link"),
-            "canonical_url": scraped_data.get("og_url"),
-            "content_type": scraped_data.get("og_type"),
-        }
 
         if WEBHOOK_INCLUDE_EXTRACTED:
             extracted_data = _summarize_for_webhook(scraped_data)
@@ -1457,12 +1440,7 @@ async def run_scraper(
             scrape_dump = _dump_for_webhook(scraped_data)
         else:
             scrape_dump = None
-
-        image_primary = scraped_data.get("og_image")
-        images_list = scraped_data.get("images") if isinstance(scraped_data.get("images"), list) else None
-        if not image_primary and images_list:
-            image_primary = images_list[0]
-
+        
         final_data = {
             "author": author,
             "caption": clean_caption,
@@ -1487,6 +1465,8 @@ async def run_scraper(
             final_data["raw_og_data"] = {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]}
             final_data["extracted_data"] = extracted_data
             final_data["scrape_dump"] = scrape_dump
+            final_data["full_scraped_data"] = scraped_data # User requested "todo lo que llega al scrap"
+            final_data["raw_html"] = page_html[:100000] if page_html else None # Include first 100k chars of HTML
             final_data["diagnostic"] = {
                 "final_url": scraped_data.get("diagnostic_final_url") or page.url,
                 "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
