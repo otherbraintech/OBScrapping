@@ -2,25 +2,24 @@ import asyncio
 import json
 import logging
 import os
-import random
-import re
-import html as _html
 import uuid
+import httpx
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from dotenv import load_dotenv
-
-load_dotenv()
-
-import httpx
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, HttpUrl
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-from playwright_stealth import stealth_async
+
+load_dotenv()
+
+# --- Modular Scrapers ---
+from scrapers.factory import ScraperFactory
 
 # --- Configuration ---
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+FACEBOOK_COOKIES = os.getenv("FACEBOOK_COOKIES", "")
+# ... (rest of configuration)
 if not WEBHOOK_URL:
     logging.warning("WEBHOOK_URL not set. App will run but webhook notifications will be skipped.")
 # Default to including extracted_data so n8n always receives everything we captured.
@@ -529,10 +528,9 @@ async def run_scraper(
     extra_wait_seconds: float = 0.0,
     dump_all: bool = False,
 ):
-    task_logger = logging.getLogger(f"fb_scraper.{task_id}")
-    task_logger.info(f"Starting scraper for {url}")
-    task_logger.info(f"PARAMETERS RECEIVED: debug_raw={debug_raw}, raw_snippet_len={raw_snippet_len}, extra_wait_seconds={extra_wait_seconds}, dump_all={dump_all}")
-
+    task_logger = TaskLogger(logger, {"task_id": task_id})
+    task_logger.info(f"Starting modular scraper for {url}")
+    
     result = {
         "task_id": task_id,
         "url": url,
@@ -542,64 +540,33 @@ async def run_scraper(
         "error": None
     }
 
-    playwright = None
-    browser = None
-    context = None
-    page = None
-
+    scraper = None
     try:
-        playwright = await async_playwright().start()
+        # Get appropriate scraper class from factory
+        scraper_cls = ScraperFactory.get_scraper_class(url)
+        scraper = scraper_cls(task_id, logger)
         
-        # Launch browser
-        browser = await playwright.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled"]
-        )
-
-        # Setup context with random parameters
-        user_agent = random.choice(USER_AGENTS)
-        viewport = random.choice(VIEWPORTS)
+        # Setup and Run
+        await scraper.setup_browser() # You could pass proxy/UA from env here
+        data = await scraper.run(url, extra_wait_seconds=extra_wait_seconds, debug_raw=debug_raw)
         
-        task_logger.info(f"Using UA: {user_agent[:50]}... Viewport: {viewport}")
-
-        # Proxy configuration (if provided)
-        proxy_config = None
-        proxy_host = os.getenv("PROXY_HOST")
-        proxy_port = os.getenv("PROXY_PORT")
-        proxy_user = os.getenv("PROXY_USERNAME")
-        proxy_pass = os.getenv("PROXY_PASSWORD")
-        
-        if proxy_host and proxy_port:
-            proxy_config = {
-                "server": f"http://{proxy_host}:{proxy_port}",
-            }
-            if proxy_user and proxy_pass:
-                proxy_config["username"] = proxy_user
-                proxy_config["password"] = proxy_pass
-            task_logger.info(f"Using proxy: {proxy_host}:{proxy_port}")
+        if data.get("status") == "error":
+            result["status"] = "error"
+            result["error"] = data.get("message")
         else:
-            task_logger.warning("No proxy configured - may be blocked by Cloudflare")
-
-        # Create browser context with optional Facebook cookies
-        context_options = {
-            "viewport": viewport,
-            "user_agent": user_agent
-        }
-        
-        if proxy_config:
-            context_options["proxy"] = proxy_config
+            result["status"] = "success"
+            result["data"] = data.get("data", {})
             
-        context = await browser.new_context(**context_options)
-        page = await context.new_page()
-        
-        # Apply stealth
-        await stealth_async(page)
-        
-        # GraphQL tracking variables
-        graphql_snippets: list[str] = []
-        graphql_matches: int = 0
-        graphql_errors: int = 0
-        graphql_match_urls: list[str] = []
+    except Exception as e:
+        task_logger.error(f"Fatal error in modular scraper: {e}")
+        result["status"] = "error"
+        result["error"] = str(e)
+    finally:
+        if scraper:
+            await scraper.close()
+            
+        # Send Webhook (re-using existing logic)
+        await send_webhook(result, task_logger)
 
         async def _handle_response(response):
             try:
@@ -786,33 +753,23 @@ async def run_scraper(
             await send_webhook(result, task_logger)
             return
 
-        # Init scraping accumulator early (used by diagnostic + parsing)
-        scraped_data = {}
-        scraped_data["diagnostic_graphql_snippets_count"] = 0
-        scraped_data["diagnostic_graphql_matches"] = 0
-        scraped_data["diagnostic_graphql_errors"] = 0
-
-        # Simulate behavior to load more content/comments/reactions
-        await simulate_human_behavior(page, task_logger)
-        
-        # Aggressive scroll to trigger engagement stats
-        try:
-            await page.evaluate("window.scrollBy(0, 300)")
-            await asyncio.sleep(2)
-            await page.evaluate("window.scrollBy(0, -300)")
-            await asyncio.sleep(1)
-        except:
-            pass
-
-        page_html = None
-        page_text = None
-
         # ===== DIAGNOSTIC: Capture what Facebook is showing =====
         try:
-            current_url = page.url
+            current_url = page.url or ""
             current_title = await page.title()
             page_html = await page.content()
+            if not page_html:
+                page_html = ""
             scraped_data["diagnostic_final_url"] = current_url
+            
+            # Detect path mismatch (Reel vs Post)
+            if "/reel/" in current_url.lower() and "/share/p/" in url.lower():
+                task_logger.warning("URL Mismatch Alert: Requested a POST but ended up on a REEL page.")
+                scraped_data["diagnostic_url_mismatch_reel_post"] = True
+            elif "/posts/" in current_url.lower() and "/share/v/" in url.lower():
+                task_logger.warning("URL Mismatch Alert: Requested a REEL but ended up on a POST page.")
+                scraped_data["diagnostic_url_mismatch_post_reel"] = True
+
             scraped_data["diagnostic_page_title"] = current_title
             scraped_data["diagnostic_html_length"] = len(page_html)
             
@@ -847,7 +804,17 @@ async def run_scraper(
         task_logger.info("Parsing page content...")
 
         # --- LAYER 1: OG Meta Tags (most reliable) ---
-        task_logger.info("Extracting OG meta tags...")
+        task_logger.info("Extracting OG meta tags from HEAD...")
+        # Get head HTML specifically to avoid picking up OG tags from body/suggestions
+        try:
+            head_val = await page.evaluate("document.head.innerHTML")
+            head_html: str = str(head_val) if head_val else ""
+        except:
+            head_html = page_html
+            
+        if not head_html:
+            head_html = ""
+            
         og_tags = [
             "og:title", "og:description", "og:image", "og:url",
             "og:video", "og:video:url", "og:video:secure_url",
@@ -857,13 +824,30 @@ async def run_scraper(
         og_found_count = 0
         for tag in og_tags:
             try:
-                el = page.locator(f'meta[property="{tag}"]')
-                if await el.count() > 0:
-                    value = await el.first.get_attribute("content")
+                # First try specifically in the head to avoid confusion with body content
+                patterns = [
+                    f'<meta[^>]+property="{tag}"[^>]+content="([^"]+)"',
+                    f'<meta[^>]+content="([^"]+)"[^>]+property="{tag}"'
+                ]
+                found_val = None
+                for pat in patterns:
+                    m = re.search(pat, head_html, re.IGNORECASE)
+                    if m:
+                        found_val = _html.unescape(m.group(1))
+                        break
+                
+                if not found_val:
+                    # Fallback to page.locator if regex fails
+                    el = page.locator(f'meta[property="{tag}"]')
+                    if await el.count() > 0:
+                        # Try to find one in the head specifically
+                        found_val = await el.first.get_attribute("content")
+
+                if found_val:
                     key = tag.replace(":", "_").replace(".", "_")
-                    scraped_data[key] = value
+                    scraped_data[key] = found_val
                     og_found_count += 1
-                    task_logger.info(f"Found OG tag {tag}: {value[:100]}...")
+                    task_logger.info(f"Found OG tag {tag}: {found_val[:100]}...")
             except Exception as e:
                 task_logger.warning(f"Error reading {tag}: {e}")
         
@@ -940,8 +924,12 @@ async def run_scraper(
             js_data = await page.evaluate("""() => {
                 const data = {};
                 
-                // Scan all aria-labels
-                const allElements = document.querySelectorAll('[aria-label]');
+                // --- STRATEGY: Find the main post container ---
+                // For Reels, the 'main' container is often distinct. For Posts, it's div[role='main'] or article.
+                const mainContainer = document.querySelector('div[role="main"]') || document.querySelector('div[role="article"]') || document;
+                
+                // Scan all aria-labels WITHIN the main container
+                const allElements = mainContainer.querySelectorAll('[aria-label]');
                 const ariaLabels = [];
                 allElements.forEach(el => {
                     const label = el.getAttribute('aria-label');
@@ -949,9 +937,9 @@ async def run_scraper(
                 });
                 data.aria_labels = ariaLabels;
                 
-                // Find ALL span texts that contain numbers (broad capture)
+                // Find engagement texts WITHIN the main container
                 const engagementTexts = [];
-                const allSpans = document.querySelectorAll('span');
+                const allSpans = mainContainer.querySelectorAll('span');
                 allSpans.forEach(span => {
                     const text = span.innerText.trim();
                     if (text && text.length < 150 && text.length > 0) {
@@ -962,8 +950,8 @@ async def run_scraper(
                 });
                 data.engagement_texts = engagementTexts;
                 
-                // Find ALL div texts with "Todas las reacciones" or reaction counts
-                const reactionDivs = document.querySelectorAll('div[role="button"]');
+                // Find button texts WITHIN the main container
+                const reactionDivs = mainContainer.querySelectorAll('div[role="button"]');
                 const buttonTexts = [];
                 reactionDivs.forEach(div => {
                     const text = div.innerText.trim();
@@ -974,33 +962,33 @@ async def run_scraper(
                 data.button_texts = buttonTexts;
                 
                 // Find video duration if available
-                const video = document.querySelector('video');
+                const video = mainContainer.querySelector('video');
                 if (video) {
                     data.video_duration = video.duration || null;
                     data.video_src = video.src || null;
                     data.video_poster = video.poster || null;
                 }
                 
-                // Specific stats capture (modern FB classes/structures)
+                // Specific stats capture
                 const statsSelectors = [
-                    'span > a[role="link"] > span > span', // Common for "799 personas"
+                    'span > a[role="link"] > span > span',
                     'div[data-visualcompletion="ignore-dynamic"] span[dir="auto"]',
                     'span[data-sigil="feed_story_add_comment"]',
                     'div[role="article"] div[data-ad-comet-preview="message"] + div span',
-                    'span.x135b78x' // Specific class provided by user
+                    'span.x135b78x'
                 ];
                 
                 const foundStats = [];
                 statsSelectors.forEach(sel => {
-                    document.querySelectorAll(sel).forEach(el => {
+                    mainContainer.querySelectorAll(sel).forEach(el => {
                         const t = el.innerText.trim();
                         if (t && /\d/.test(t) && t.length < 50) foundStats.push(t);
                     });
                 });
                 data.dom_stats = foundStats;
                 
-                // Find timestamp/date
-                const timeLinks = document.querySelectorAll('a[role="link"]');
+                // Date/Timestamp
+                const timeLinks = mainContainer.querySelectorAll('a[role="link"]');
                 timeLinks.forEach(link => {
                     const ariaLabel = link.getAttribute('aria-label');
                     if (ariaLabel && /\d/.test(ariaLabel) && (
@@ -1008,15 +996,6 @@ async def run_scraper(
                         /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(ariaLabel)
                     )) {
                         data.post_date = ariaLabel;
-                    }
-                });
-                
-                // Find all abbr/time elements
-                const timeEls = document.querySelectorAll('abbr, time');
-                timeEls.forEach(el => {
-                    const title = el.getAttribute('title') || el.getAttribute('datetime');
-                    if (title) {
-                        data.post_date = data.post_date || title;
                     }
                 });
                 
@@ -1043,11 +1022,16 @@ async def run_scraper(
             
             for label in js_data.get("aria_labels", []):
                 # Skip labels that look like they belong to a comment
-                if "mira quién ha reaccionado" in label.lower() or "consulta quién reaccionó" in label.lower():
-                    # We might still want to extract the number but flagged as sub-count
-                    pass
+                low_label = label.lower()
+                if "mira quién ha reaccionado" in low_label or "consulta quién reaccionó" in low_label or "view who reacted" in low_label:
+                    continue
 
                 total_r = _extract_reactions_count_from_text(label)
+                
+                # Fallback: if label is JUST a number or "821" type string and we have some context
+                if not total_r and re.match(r"^[\d.,]+[KMkm]?$", label.strip()):
+                    total_r = label.strip()
+
                 if total_r:
                     # If we found another one, keep the largest
                     old_val = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
@@ -1086,70 +1070,93 @@ async def run_scraper(
             # Parse engagement text from spans and buttons
             all_texts = js_data.get("engagement_texts", []) + js_data.get("button_texts", [])
             for text in all_texts:
-                # Comments: "16 comentarios"
-                if not scraped_data.get("comments"):
-                    m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', text, re.IGNORECASE)
+                # Reactions total
+                r_total = None
+                if any(kw in text.lower() for kw in ["total de reacciones", "todas las reacciones", "all reactions"]):
+                    m = re.search(r'([\d,.]+)', text)
                     if m:
-                        scraped_data["comments"] = m.group(1)
+                        r_total = m.group(1)
+                else:
+                    r_total = _extract_reactions_count_from_text(text)
+                
+                if r_total:
+                    old_v = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
+                    new_v = _normalize_count(r_total, text) or 0
+                    if new_v > old_v:
+                        scraped_data["reactions"] = r_total
+                        scraped_data["reactions_context"] = text
+
+                # Comments: "16 comentarios"
+                c_total = None
+                m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', text, re.IGNORECASE)
+                if m:
+                    c_total = m.group(1)
+                
+                if c_total:
+                    old_v = _normalize_count(scraped_data.get("comments")) or 0
+                    new_v = _normalize_count(c_total) or 0
+                    if new_v > old_v:
+                        scraped_data["comments"] = c_total
                 
                 # Shares: "38 veces compartido" or "38 shares"
-                if not scraped_data.get("shares"):
-                    s = _extract_shares_count_from_text(text)
-                    if s:
-                        scraped_data["shares"] = s
+                s_total = _extract_shares_count_from_text(text)
+                if s_total:
+                    old_v = _normalize_count(scraped_data.get("shares")) or 0
+                    new_v = _normalize_count(s_total) or 0
+                    if new_v > old_v:
+                        scraped_data["shares"] = s_total
                 
                 # Views: "5,5 mil visualizaciones" or "5.5K views"
-                if not scraped_data.get("views"):
-                    m = re.search(r'([\d,.]+)\s*mil\s+(?:visualizaciones|reproducciones|vistas)', text, re.IGNORECASE)
-                    if m:
-                        scraped_data["views"] = m.group(0).strip()
-                    else:
-                        m = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|vistas)', text, re.IGNORECASE)
-                        if m:
-                            scraped_data["views"] = m.group(0).strip()
+                v_total = None
+                mv = re.search(r'([\d,.]+)\s*mil\s+(?:visualizaciones|reproducciones|vistas)', text, re.IGNORECASE)
+                if mv:
+                    v_total = mv.group(0).strip()
+                else:
+                    mv = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|vistas)', text, re.IGNORECASE)
+                    if mv:
+                        v_total = mv.group(0).strip()
                 
-                # Reactions total
-                if not scraped_data.get("reactions"):
-                    if any(kw in text.lower() for kw in ["total de reacciones", "todas las reacciones", "all reactions"]):
-                        m = re.search(r'([\d,.]+)', text)
-                        if m:
-                            scraped_data["reactions"] = m.group(1)
-                            scraped_data["reactions_context"] = text
-                    else:
-                        r = _extract_reactions_count_from_text(text)
-                        if r:
-                            scraped_data["reactions"] = r
-                            scraped_data["reactions_context"] = text
+                if v_total:
+                    old_v = _normalize_count(scraped_data.get("views")) or 0
+                    new_v = _normalize_count(v_total) or 0
+                    if new_v > old_v:
+                        scraped_data["views"] = v_total
             
             # DOM STATS priority
             for text in js_data.get("dom_stats", []):
-                # Shares: prioritize "veces compartido"
-                if not scraped_data.get("shares"):
-                    s = _extract_shares_count_from_text(text)
-                    if s:
-                        scraped_data["shares"] = s
-
-                # Views: STRICT (no 'veces')
-                if not scraped_data.get("views"):
-                    v = _extract_views_count_from_text(text)
-                    if v:
-                         scraped_data["views"] = v
-
-                # Comments
-                if not scraped_data.get("comments"):
-                    c = _extract_comments_count_from_text(text)
-                    if c:
-                        scraped_data["comments"] = c
-
                 # Reactions
                 r_raw = _extract_reactions_count_from_text(text)
                 if r_raw:
-                    curr_val = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
-                    new_val = _normalize_count(r_raw, text) or 0
-                    if new_val > curr_val:
+                    old_v = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
+                    new_v = _normalize_count(r_raw, text) or 0
+                    if new_v > old_v:
                         scraped_data["reactions"] = r_raw
                         scraped_data["reactions_context"] = text
-                        task_logger.info(f"JS: Found better reaction count: {new_val} from '{text}'")
+                        task_logger.info(f"JS: Found better reaction count: {new_v} from '{text}'")
+
+                # Shares: prioritize "veces compartido"
+                s_raw = _extract_shares_count_from_text(text)
+                if s_raw:
+                    old_v = _normalize_count(scraped_data.get("shares")) or 0
+                    new_v = _normalize_count(s_raw) or 0
+                    if new_v > old_v:
+                        scraped_data["shares"] = s_raw
+
+                # Views: STRICT (no 'veces')
+                v_raw = _extract_views_count_from_text(text)
+                if v_raw:
+                    old_v = _normalize_count(scraped_data.get("views")) or 0
+                    new_v = _normalize_count(v_raw) or 0
+                    if new_v > old_v:
+                        scraped_data["views"] = v_raw
+
+                # Comments
+                c_raw = _extract_comments_count_from_text(text)
+                if c_raw:
+                    old_v = _normalize_count(scraped_data.get("comments")) or 0
+                    new_v = _normalize_count(c_raw) or 0
+                    if new_v > old_v:
+                        scraped_data["comments"] = c_raw
             
             # Video data from JS
             if js_data.get("video_src"):
@@ -1359,6 +1366,7 @@ async def run_scraper(
 
         # --- LAYER 6: DOM element fallbacks ---
         # Caption from visible text (if OG description didn't capture it)
+        # Standardize to look within the main container first
         if not scraped_data.get("og_description"):
             try:
                 caption_selectors = [
@@ -1366,15 +1374,22 @@ async def run_scraper(
                     "div[data-ad-comet-preview='message']",
                     "div[dir='auto'][style*='text-align']",
                 ]
-                for sel in caption_selectors:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        text = await el.text_content()
-                        if text and len(text.strip()) > 5:
-                            scraped_data["caption"] = text.strip()
-                            break
-            except:
-                pass
+                
+                # Use evaluate to find the BEST caption within the main post container
+                caption_from_js = await page.evaluate("""(selectors) => {
+                    const main = document.querySelector('div[role="main"]') || document.querySelector('div[role="article"]') || document;
+                    for (const sel of selectors) {
+                        const el = main.querySelector(sel);
+                        if (el && el.innerText.trim().length > 5) return el.innerText.trim();
+                    }
+                    return null;
+                }""", caption_selectors)
+                
+                if caption_from_js:
+                    scraped_data["caption"] = caption_from_js
+                    task_logger.info(f"Found localized caption: {caption_from_js[:50]}...")
+            except Exception as e:
+                task_logger.warning(f"Localized caption extraction error: {e}")
 
         # Username / Page Name
         if not scraped_data.get("author_from_title"):
@@ -1386,29 +1401,42 @@ async def run_scraper(
                     "h2 a", "h3 a",
                     "a[aria-label][role='link'] strong",
                 ]
-                for sel in user_selectors:
-                    el = page.locator(sel).first
-                    if await el.count() > 0:
-                        text = await el.text_content()
-                        if text and len(text.strip()) > 1 and text.strip().lower() not in ["facebook", "log in", "sign up", "privacy", "iniciar sesión"]:
-                            scraped_data["username"] = text.strip()
-                            href = await el.get_attribute("href")
-                            if href:
-                                scraped_data["user_link"] = href
-                            break
+                # Look specifically for the post author near the top of the main container
+                author_from_js = await page.evaluate("""(selectors) => {
+                    const main = document.querySelector('div[role="main"]') || document.querySelector('div[role="article"]') || document;
+                    for (const sel of selectors) {
+                        const el = main.querySelector(sel);
+                        if (el) {
+                             const text = el.innerText.trim();
+                             if (text && text.length > 1 && !/facebook|login|iniciar/i.test(text)) {
+                                 return { text: text, href: el.getAttribute('href') };
+                             }
+                        }
+                    }
+                    return null;
+                }""", user_selectors)
+                
+                if author_from_js:
+                    scraped_data["username"] = author_from_js['text']
+                    if author_from_js.get('href'):
+                        scraped_data["user_link"] = author_from_js['href']
+                    task_logger.info(f"Found localized author: {scraped_data['username']}")
             except:
                 pass
 
-        # Video element
+        # Video element - localize to main
         try:
-            video_el = page.locator("video").first
-            if await video_el.count() > 0:
-                src = await video_el.get_attribute("src")
-                poster = await video_el.get_attribute("poster")
-                if src and not scraped_data.get("video_src"):
-                    scraped_data["video_src"] = src
-                if poster and not scraped_data.get("video_poster"):
-                    scraped_data["video_poster"] = poster
+            video_src_from_js = await page.evaluate("""() => {
+                const main = document.querySelector('div[role="main"]') || document.querySelector('div[role="article"]') || document;
+                const v = main.querySelector('video');
+                if (v) return { src: v.src, poster: v.getAttribute('poster') };
+                return null;
+            }""")
+            if video_src_from_js:
+                if video_src_from_js['src'] and not scraped_data.get("video_src"):
+                    scraped_data["video_src"] = video_src_from_js['src']
+                if video_src_from_js['poster'] and not scraped_data.get("video_poster"):
+                    scraped_data["video_poster"] = video_src_from_js['poster']
         except:
             pass
 
