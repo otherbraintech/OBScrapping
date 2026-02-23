@@ -97,6 +97,36 @@ class TaskLogger(logging.LoggerAdapter):
 def get_random_delay(min_seconds=10.0, max_seconds=30.0):
     return random.uniform(min_seconds, max_seconds)
 
+def _extract_shares_count_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    patterns = [
+        r"([\d.,]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)",
+        r"([\d.,]+)\s*veces\s*compartido",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+def _extract_reactions_count_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    patterns = [
+        r"([\d.,]+[KMkm]?)\s*(?:reactions?|reacciones|personas reaccionaron)",
+        # Authenticated variations: "Tú y 798 personas más", "You and 1 other"
+        r"(?:Tú|Usted|You|Usted,)\s*(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*más",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            val = m.group(1).replace(',', '').replace('.', '')
+            # If it's a "You and X others" situation, we might want to flag for +1
+            # But normalization will handle the digits.
+            return m.group(1)
+    return None
+
 def _extract_comments_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
@@ -104,8 +134,7 @@ def _extract_comments_count_from_text(text: str) -> Optional[str]:
     patterns = [
         r"view\s+all\s+([\d.,]+)\s*comments?",
         r"ver\s+los\s+([\d.,]+)\s*comentarios",
-        r"([\d.,]+)\s*comments?",
-        r"([\d.,]+)\s*comentarios",
+        r"([\d.,]+)\s*(?:comments?|comentarios)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -116,10 +145,11 @@ def _extract_comments_count_from_text(text: str) -> Optional[str]:
 def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+    # Removed 'veces' to avoid collision with 'veces compartido'
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|veces)",
-        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas|veces)",
-        r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|veces)",
+        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas)",
+        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas)",
+        r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas)",
         r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
         r"([\d.,]+)\s*million\s*(?:views?|plays?)",
     ]
@@ -129,30 +159,42 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
             return m.group(1)
     return None
 
-def _normalize_count(value: Optional[str]) -> Optional[int]:
+def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -> Optional[int]:
     if value is None:
         return None
     s = str(value).strip()
     if not s:
         return None
+    
+    # Check if we need to add +1 or +2 for "You and..." patterns
+    added_count = 0
+    if text_context:
+        t_low = text_context.lower()
+        if any(kw in t_low for kw in ["tú y", "usted y", "you and"]):
+            added_count = 1
+        if any(kw in t_low for kw in ["tú, ", "usted, ", "you, "]) and any(kw in t_low for kw in [" y ", " and "]):
+             # "You, Name and 7 others" -> 9 total?
+             # For now let's just do +1 as it's the most common
+             added_count = 1
+
     s = s.replace(" ", "")
     # Handle Spanish format like "5,5mil" / "5mil"
     m_mil = re.match(r"^(\d+(?:[\.,]\d+)?)mil$", s, re.IGNORECASE)
     if m_mil:
         num = float(m_mil.group(1).replace(",", "."))
-        return int(num * 1000)
+        return int(num * 1000) + added_count
     # Handle 1.2K / 1,2K and 3M / 3,4M
     m = re.match(r"^(\d+(?:[\.,]\d+)?)\s*([KkMm])$", s)
     if m:
         num = float(m.group(1).replace(",", "."))
         mult = 1000 if m.group(2).lower() == "k" else 1000000
-        return int(num * mult)
+        return int(num * mult) + added_count
     # Handle plain numbers with separators
     s_digits = re.sub(r"[^0-9]", "", s)
     if not s_digits:
         return None
     try:
-        return int(s_digits)
+        return int(s_digits) + added_count
     except Exception:
         return None
 
@@ -850,10 +892,10 @@ async def run_scraper(
             task_logger.info(f"Parsing OG title: {og_title[:100]}...")
             
             # Extract reactions from OG title
-            # Prioritize "X reactions" / "X reacciones"
-            og_reactions_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones|personas reaccionaron)', og_title, re.IGNORECASE)
-            if og_reactions_match:
-                scraped_data["reactions"] = og_reactions_match.group(1)
+            r = _extract_reactions_count_from_text(og_title)
+            if r:
+                scraped_data["reactions"] = r
+                scraped_data["reactions_context"] = og_title
             else:
                  # Fallback for "X likes"
                  og_likes_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:likes?|me gusta)', og_title, re.IGNORECASE)
@@ -861,19 +903,19 @@ async def run_scraper(
                      scraped_data["reactions"] = og_likes_match.group(1)
             
             # Extract shares from OG title
-            og_shares_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)', og_title, re.IGNORECASE)
-            if og_shares_match:
-                scraped_data["shares"] = og_shares_match.group(1)
+            s = _extract_shares_count_from_text(og_title)
+            if s:
+                scraped_data["shares"] = s
             
             # Extract comments from OG title
-            og_comments_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:comments?|comentarios)', og_title, re.IGNORECASE)
-            if og_comments_match:
-                scraped_data["comments"] = og_comments_match.group(1)
+            c = _extract_comments_count_from_text(og_title)
+            if c:
+                scraped_data["comments"] = c
 
             # Extract views from OG title
-            og_views_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones)', og_title, re.IGNORECASE)
-            if og_views_match:
-                scraped_data["views"] = og_views_match.group(1)
+            v = _extract_views_count_from_text(og_title)
+            if v:
+                scraped_data["views"] = v
 
             # Extract author from OG title (usually after last "|")
             if "|" in og_title:
@@ -1001,15 +1043,16 @@ async def run_scraper(
             found_total_reactions_label = False
             
             for label in js_data.get("aria_labels", []):
-                # LOOK FOR TOTAL FIRST: "799 reacciones" or "799 reactions" or "799 personas reaccionaron"
-                total_match = re.search(r'([\d,.]+)\s*(?:reactions?|reacciones|personas reaccionaron)', label, re.IGNORECASE)
-                if total_match:
-                    scraped_data["reactions"] = total_match.group(1)
+                # LOOK FOR TOTAL FIRST
+                total_r = _extract_reactions_count_from_text(label)
+                if total_r:
+                    scraped_data["reactions"] = total_r
+                    scraped_data["reactions_context"] = label
                     found_total_reactions_label = True
-                    task_logger.info(f"JS: Found TOTAL reactions in aria-label: {total_match.group(1)}")
-                    break # Prioritize total over sum
+                    task_logger.info(f"JS: Found total reactions in aria-label: {total_r}")
+                    break
 
-                # Summing logic (only if we didn't find a total yet)
+                # Summing logic (as fallback)
                 reaction_match = re.search(r'(?:Me gusta|Me encanta|Me divierte|Me asombra|Me entristece|Me enoja|Like|Love|Haha|Wow|Sad|Angry):\s*([\d,.]+)\s*persona', label, re.IGNORECASE)
                 if reaction_match:
                     count_str = reaction_match.group(1).replace(',', '').replace('.', '')
@@ -1020,15 +1063,15 @@ async def run_scraper(
                     
                 # Comments from aria-label
                 if not scraped_data.get("comments"):
-                    m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', label, re.IGNORECASE)
-                    if m:
-                        scraped_data["comments"] = m.group(1)
+                    c = _extract_comments_count_from_text(label)
+                    if c:
+                        scraped_data["comments"] = c
                 
                 # Views from aria-label
                 if not scraped_data.get("views"):
-                    m = re.search(r'([\d,.]+)\s*(?:mil\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas)', label, re.IGNORECASE)
-                    if m:
-                        scraped_data["views"] = m.group(0).strip()
+                    v = _extract_views_count_from_text(label)
+                    if v:
+                        scraped_data["views"] = v
             
             # If we summed individual reaction types, use that as total
             if reaction_types_total > 0 and not scraped_data.get("reactions"):
@@ -1045,9 +1088,9 @@ async def run_scraper(
                 
                 # Shares: "38 veces compartido" or "38 shares"
                 if not scraped_data.get("shares"):
-                    m = re.search(r'([\d,.]+)\s*(?:veces compartido|shares?|compartido)', text, re.IGNORECASE)
-                    if m:
-                        scraped_data["shares"] = m.group(1)
+                    s = _extract_shares_count_from_text(text)
+                    if s:
+                        scraped_data["shares"] = s
                 
                 # Views: "5,5 mil visualizaciones" or "5.5K views"
                 if not scraped_data.get("views"):
@@ -1059,23 +1102,22 @@ async def run_scraper(
                         if m:
                             scraped_data["views"] = m.group(0).strip()
                 
-                # Reactions total: "Todas las reacciones:\n291"
+                # Reactions total
                 if not scraped_data.get("reactions"):
-                    # Prioritize patterns that strongly indicate a total
                     if any(kw in text.lower() for kw in ["total de reacciones", "todas las reacciones", "all reactions"]):
                         m = re.search(r'([\d,.]+)', text)
                         if m:
                             scraped_data["reactions"] = m.group(1)
-                    elif "reacciones" in text.lower() or "reactions" in text.lower():
-                        # Be careful, if it's just "1 reacción", it might be a button
-                        m = re.search(r'([\d,.]+)\s*(?:reacciones?|reactions?)', text, re.IGNORECASE)
-                        if m:
-                            scraped_data["reactions"] = m.group(1)
+                            scraped_data["reactions_context"] = text
+                    else:
+                        r = _extract_reactions_count_from_text(text)
+                        if r:
+                            scraped_data["reactions"] = r
+                            scraped_data["reactions_context"] = text
             
             # Video data from JS
             if js_data.get("video_src"):
                 scraped_data["video_src"] = js_data["video_src"]
-            if js_data.get("video_poster"):
                 scraped_data["video_poster"] = js_data["video_poster"]
             if js_data.get("video_duration"):
                 scraped_data["video_duration_seconds"] = js_data["video_duration"]
@@ -1342,10 +1384,16 @@ async def run_scraper(
         
         comments_raw = scraped_data.get("comments")
         comments_count = _normalize_count(comments_raw)
+        
         reactions_raw = scraped_data.get("reactions")
-        reactions_count = _normalize_count(reactions_raw)
+        reactions_context = scraped_data.get("reactions_context")
+        reactions_count = _normalize_count(reactions_raw, reactions_context)
+        
         views_raw = scraped_data.get("views")
         views_count = _normalize_count(views_raw)
+        
+        shares_raw = scraped_data.get("shares")
+        shares_count = _normalize_count(shares_raw)
 
         if WEBHOOK_INCLUDE_EXTRACTED:
             extracted_data = _summarize_for_webhook(scraped_data)
@@ -1372,7 +1420,7 @@ async def run_scraper(
             "video_duration_seconds": scraped_data.get("video_duration_seconds"),
             "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
             "reactions_count": reactions_count,
-            "shares": scraped_data.get("shares"),
+            "shares_count": shares_count,
             "comments_count": comments_count,
             "views_count": views_count,
             "post_date": scraped_data.get("post_date"),
