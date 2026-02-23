@@ -114,16 +114,14 @@ def _extract_reactions_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
+        # Authenticated variations: "Tú, Mario y 798 personas más", "You and 1 other"
+        r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
+        # Standard variations
         r"([\d.,]+[KMkm]?)\s*(?:reactions?|reacciones|personas reaccionaron)",
-        # Authenticated variations: "Tú y 798 personas más", "You and 1 other"
-        r"(?:Tú|Usted|You|Usted,)\s*(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*más",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            val = m.group(1).replace(',', '').replace('.', '')
-            # If it's a "You and X others" situation, we might want to flag for +1
-            # But normalization will handle the digits.
             return m.group(1)
     return None
 
@@ -170,12 +168,9 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
     added_count = 0
     if text_context:
         t_low = text_context.lower()
-        if any(kw in t_low for kw in ["tú y", "usted y", "you and"]):
+        if any(kw in t_low for kw in ["tú y", "usted y", "you and", "tú, ", "usted, ", "you, "]):
+            # If it's "You, Name and 799 others" or "You and 1 other", we add the current user
             added_count = 1
-        if any(kw in t_low for kw in ["tú, ", "usted, ", "you, "]) and any(kw in t_low for kw in [" y ", " and "]):
-             # "You, Name and 7 others" -> 9 total?
-             # For now let's just do +1 as it's the most common
-             added_count = 1
 
     s = s.replace(" ", "")
     # Handle Spanish format like "5,5mil" / "5mil"
@@ -983,12 +978,12 @@ async def run_scraper(
                 }
                 
                 // Specific stats capture (modern FB classes/structures)
-                // Look for the row that typically has reactions and comments
                 const statsSelectors = [
                     'span > a[role="link"] > span > span', // Common for "799 personas"
                     'div[data-visualcompletion="ignore-dynamic"] span[dir="auto"]',
                     'span[data-sigil="feed_story_add_comment"]',
-                    'div[role="article"] div[data-ad-comet-preview="message"] + div span'
+                    'div[role="article"] div[data-ad-comet-preview="message"] + div span',
+                    'span.x135b78x' // Specific class provided by user
                 ];
                 
                 const foundStats = [];
@@ -1114,6 +1109,36 @@ async def run_scraper(
                         if r:
                             scraped_data["reactions"] = r
                             scraped_data["reactions_context"] = text
+            
+            # DOM STATS priority
+            for text in js_data.get("dom_stats", []):
+                # Shares: prioritize "veces compartido"
+                if not scraped_data.get("shares"):
+                    s = _extract_shares_count_from_text(text)
+                    if s:
+                        scraped_data["shares"] = s
+
+                # Views: STRICT (no 'veces')
+                if not scraped_data.get("views"):
+                    v = _extract_views_count_from_text(text)
+                    if v:
+                         scraped_data["views"] = v
+
+                # Comments
+                if not scraped_data.get("comments"):
+                    c = _extract_comments_count_from_text(text)
+                    if c:
+                        scraped_data["comments"] = c
+
+                # Reactions
+                r_raw = _extract_reactions_count_from_text(text)
+                if r_raw:
+                    curr_val = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
+                    new_val = _normalize_count(r_raw, text) or 0
+                    if new_val > curr_val:
+                        scraped_data["reactions"] = r_raw
+                        scraped_data["reactions_context"] = text
+                        task_logger.info(f"JS: Found better reaction count: {new_val} from '{text}'")
             
             # Video data from JS
             if js_data.get("video_src"):
@@ -1394,6 +1419,34 @@ async def run_scraper(
         
         shares_raw = scraped_data.get("shares")
         shares_count = _normalize_count(shares_raw)
+        
+        # FINAL ENSURE: If views equals shares, one of them is likely a miscapture
+        # Usually 'visualizaciones' is views and 'veces compartido' is shares.
+        # If we have both as 26, it's suspicious.
+        if views_count == shares_count and views_count is not None:
+             # If views_raw came from something with "compartido", it's shares.
+             if views_raw and any(kw in str(views_raw).lower() for kw in ["compartido", "share"]):
+                 views_count = None
+                 task_logger.info("De-duplicating views vs shares: views looks like shares.")
+        
+        final_data = {
+            "author": author,
+            "caption": clean_caption,
+            "description": description,
+            "image": image_primary,
+            "images": images_list,
+            "video_url": scraped_data.get("og_video_secure_url") or scraped_data.get("og_video_url") or scraped_data.get("og_video") or scraped_data.get("video_src"),
+            "video_duration_seconds": scraped_data.get("video_duration_seconds"),
+            "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
+            "reactions_count": reactions_count,
+            "shares_count": shares_count,
+            "comments_count": comments_count,
+            "views_count": views_count,
+            "post_date": scraped_data.get("post_date"),
+            "user_link": scraped_data.get("user_link"),
+            "canonical_url": scraped_data.get("og_url"),
+            "content_type": scraped_data.get("og_type"),
+        }
 
         if WEBHOOK_INCLUDE_EXTRACTED:
             extracted_data = _summarize_for_webhook(scraped_data)
