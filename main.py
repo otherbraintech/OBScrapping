@@ -1462,19 +1462,18 @@ async def run_scraper(
             "content_type": scraped_data.get("og_type"),
         }
 
-        # Debug fields (only if requested)
-        if debug_raw or dump_all:
-            final_data["raw_og_data"] = {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]}
-            final_data["extracted_data"] = extracted_data
-            final_data["scrape_dump"] = scrape_dump
-            final_data["full_scraped_data"] = scraped_data # User requested "todo lo que llega al scrap"
-            final_data["raw_html"] = page_html[:100000] if page_html else None # Include first 100k chars of HTML
-            final_data["diagnostic"] = {
-                "final_url": scraped_data.get("diagnostic_final_url") or page.url,
-                "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
-                "html_length": scraped_data.get("diagnostic_html_length") or (len(page_html) if page_html else None),
-                "og_tags_found": scraped_data.get("diagnostic_og_tags_found"),
-            }
+        # Always include debug fields for now to help the user solve the "2" mystery
+        final_data["raw_og_data"] = {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]}
+        final_data["extracted_data"] = extracted_data
+        final_data["scrape_dump"] = scrape_dump
+        final_data["full_scraped_data"] = scraped_data 
+        final_data["raw_html"] = page_html[:100000] if page_html else None 
+        final_data["diagnostic"] = {
+            "final_url": scraped_data.get("diagnostic_final_url") or (page.url if 'page' in locals() else None),
+            "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
+            "html_length": scraped_data.get("diagnostic_html_length") or (len(page_html) if page_html else None),
+            "og_tags_found": scraped_data.get("diagnostic_og_tags_found"),
+        }
         # Remove None values for cleaner output
         final_data = {k: v for k, v in final_data.items() if v is not None}
 
