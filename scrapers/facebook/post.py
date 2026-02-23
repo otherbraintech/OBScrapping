@@ -23,6 +23,19 @@ OG_TAGS = [
 
 class FacebookPostScraper(FacebookBaseScraper):
 
+    async def _scroll_page(self):
+        """Scroll to trigger lazy loading of engagement data."""
+        if not self.page:
+            return
+        try:
+            for _ in range(3):
+                await self.page.evaluate("window.scrollBy(0, 600)")
+                await asyncio.sleep(0.8)
+            await self.page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
     async def run(self, url: str, **kwargs) -> Dict[str, Any]:
         self.logger.info(f"Running FacebookPostScraper for {url}")
 
@@ -46,12 +59,16 @@ class FacebookPostScraper(FacebookBaseScraper):
             except Exception:
                 self.logger.warning("Navigation timed out, proceeding anyway...")
 
-            await asyncio.sleep(extra_wait if extra_wait > 0 else 3)
+            # Wait for page to settle
+            await asyncio.sleep(max(extra_wait, 3.0))
 
             # ---- CHECK FOR HARD BLOCK ----
             restriction_msg = await self.check_restricted()
             if restriction_msg:
                 return self.format_error(restriction_msg)
+
+            # ---- SCROLL to trigger lazy loading ----
+            await self._scroll_page()
 
             # ---- LAYER 1: OG META TAGS ----
             self.logger.info("Extracting OG meta tags...")
@@ -104,10 +121,32 @@ class FacebookPostScraper(FacebookBaseScraper):
             except Exception:
                 pass
 
-            # ---- LAYER 2: PARSE OG TITLE FOR ENGAGEMENT ----
+            # ---- LAYER 2: STRUCTURED FIELDS FROM OG DATA ----
+            # Caption: og:description is the post text, page title has "Caption - Author" format
             og_title = scraped_data.get("og_title", "")
+            og_description = scraped_data.get("og_description", "")
+            page_title = scraped_data.get("page_title", "")
+
+            # Caption = og:description (most reliable for post text)
+            if og_description:
+                scraped_data["caption"] = og_description
+
+            # Username: extract from page title "Caption - Author" or from og:title
+            # page_title format: "Caption - Author" (for posts)
+            # og:title is often just the author name
+            if og_title and not scraped_data.get("username"):
+                # og:title tends to be the Page/Author name for posts
+                scraped_data["username"] = og_title
+
+            if page_title and " - " in page_title:
+                parts = page_title.rsplit(" - ", 1)
+                if len(parts) == 2:
+                    scraped_data["username"] = parts[1].strip()
+                    if not scraped_data.get("caption"):
+                        scraped_data["caption"] = parts[0].strip()
+
+            # Parse OG title for engagement (some posts embed counts in og:title)
             if og_title:
-                self.logger.info(f"Parsing OG title: {og_title[:100]}")
                 r = _extract_reactions_count_from_text(og_title)
                 if r:
                     scraped_data["reactions"] = r
@@ -121,14 +160,6 @@ class FacebookPostScraper(FacebookBaseScraper):
                 v = _extract_views_count_from_text(og_title)
                 if v:
                     scraped_data["views"] = v
-                # Author and caption from title
-                if "|" in og_title:
-                    parts = og_title.split("|")
-                    scraped_data["author_from_title"] = parts[-1].strip()
-                    if len(parts) >= 3:
-                        scraped_data["clean_caption"] = parts[1].strip()
-                    elif len(parts) == 2:
-                        scraped_data["clean_caption"] = parts[0].strip()
 
             # ---- LAYER 3: JS EVALUATION ----
             self.logger.info("Running JS extraction...")
@@ -140,15 +171,14 @@ class FacebookPostScraper(FacebookBaseScraper):
                         || document;
 
                     // Aria labels
-                    const allElements = mainContainer.querySelectorAll('[aria-label]');
                     const ariaLabels = [];
-                    allElements.forEach(el => {
+                    mainContainer.querySelectorAll('[aria-label]').forEach(el => {
                         const label = el.getAttribute('aria-label');
                         if (label) ariaLabels.push(label);
                     });
                     data.aria_labels = ariaLabels;
 
-                    // Engagement texts from spans
+                    // Engagement texts from spans with numbers
                     const engagementTexts = [];
                     mainContainer.querySelectorAll('span').forEach(span => {
                         const text = span.innerText ? span.innerText.trim() : '';
@@ -158,7 +188,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                     });
                     data.engagement_texts = engagementTexts;
 
-                    // Button texts
+                    // Button texts (reaction/comment/share buttons)
                     const buttonTexts = [];
                     mainContainer.querySelectorAll('div[role="button"]').forEach(div => {
                         const text = div.innerText ? div.innerText.trim() : '';
@@ -169,14 +199,19 @@ class FacebookPostScraper(FacebookBaseScraper):
                     // Video info
                     const video = mainContainer.querySelector('video');
                     if (video) {
-                        data.video_duration = video.duration || null;
                         data.video_src = video.src || null;
                         data.video_poster = video.poster || null;
+                        data.video_duration = video.duration || null;
+                    }
+
+                    // Post image (first meaningful image)
+                    const imgs = mainContainer.querySelectorAll('img[src*="fbcdn"]');
+                    if (imgs.length > 0) {
+                        data.post_image = imgs[0].src;
                     }
 
                     // Post date from aria-label on time links
-                    const timeLinks = mainContainer.querySelectorAll('a[role="link"]');
-                    timeLinks.forEach(link => {
+                    mainContainer.querySelectorAll('a[role="link"]').forEach(link => {
                         const ariaLabel = link.getAttribute('aria-label');
                         if (ariaLabel && /\\d/.test(ariaLabel) && (
                             /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(ariaLabel) ||
@@ -186,7 +221,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                         }
                     });
 
-                    // Caption / post text
+                    // Caption from DOM
                     const captionEl = mainContainer.querySelector('[data-ad-comet-preview="message"]')
                         || mainContainer.querySelector('div[dir="auto"] > div[dir="auto"]')
                         || mainContainer.querySelector('div[data-testid="post_message"]');
@@ -194,7 +229,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                         data.caption = captionEl.innerText ? captionEl.innerText.trim() : null;
                     }
 
-                    // Username
+                    // Username from DOM
                     const usernameEl = mainContainer.querySelector('h2 a[role="link"]')
                         || mainContainer.querySelector('h3 a[role="link"]')
                         || mainContainer.querySelector('strong a[role="link"]');
@@ -206,11 +241,16 @@ class FacebookPostScraper(FacebookBaseScraper):
                 }""")
 
                 self.logger.info(
-                    f"JS found: {len(js_data.get('aria_labels', []))} aria-labels, "
+                    f"JS found {len(js_data.get('aria_labels', []))} aria-labels, "
                     f"{len(js_data.get('engagement_texts', []))} engagement texts"
                 )
 
-                # Post date & caption & username
+                # Log engagement-related labels for debugging
+                for label in js_data.get("aria_labels", []):
+                    if any(kw in label.lower() for kw in ['gusta', 'comenta', 'compartid', 'reacci', 'reaction', 'comment', 'share', 'view', 'personas']):
+                        self.logger.info(f"  ARIA-LABEL: {label[:120]}")
+
+                # Override/enrich with DOM-extracted fields
                 if js_data.get("post_date"):
                     scraped_data["post_date"] = js_data["post_date"]
                 if js_data.get("caption"):
@@ -222,6 +262,8 @@ class FacebookPostScraper(FacebookBaseScraper):
                     scraped_data["video_poster"] = js_data.get("video_poster")
                 if js_data.get("video_duration"):
                     scraped_data["video_duration_seconds"] = js_data["video_duration"]
+                if js_data.get("post_image") and not scraped_data.get("og_image"):
+                    scraped_data["post_image"] = js_data["post_image"]
 
                 # Parse aria-labels for engagement
                 for label in js_data.get("aria_labels", []):
@@ -243,6 +285,10 @@ class FacebookPostScraper(FacebookBaseScraper):
                         v = _extract_views_count_from_text(label)
                         if v:
                             scraped_data["views"] = v
+                    if not scraped_data.get("shares"):
+                        s = _extract_shares_count_from_text(label)
+                        if s:
+                            scraped_data["shares"] = s
 
                 # Parse engagement texts + button texts
                 all_texts = js_data.get("engagement_texts", []) + js_data.get("button_texts", [])
@@ -279,7 +325,7 @@ class FacebookPostScraper(FacebookBaseScraper):
             except Exception as e:
                 self.logger.warning(f"JS extraction error: {e}")
 
-            # ---- LAYER 4: PAGE TEXT FALLBACK ----
+            # ---- LAYER 4: PAGE BODY TEXT FALLBACK ----
             try:
                 page_text = await self.page.inner_text("body")
                 if not scraped_data.get("comments"):
@@ -306,8 +352,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                 except Exception:
                     pass
 
-            # ---- BUILD FINAL OUTPUT ----
-            # Normalize final counts to integers
+            # ---- NORMALIZE COUNTS ----
             for field in ["reactions", "comments", "shares", "views"]:
                 raw = scraped_data.get(field)
                 if raw:
@@ -315,9 +360,8 @@ class FacebookPostScraper(FacebookBaseScraper):
                     if normalized is not None:
                         scraped_data[f"{field}_count"] = normalized
 
-            # Remove None values
+            # ---- CLEAN OUTPUT ----
             scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
-
             self.logger.info(f"Extraction complete. Keys: {list(scraped_data.keys())}")
 
             return {
