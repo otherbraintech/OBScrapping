@@ -491,11 +491,6 @@ async def run_scraper(
     task_logger = logging.getLogger(f"fb_scraper.{task_id}")
     task_logger.info(f"Starting scraper for {url}")
     task_logger.info(f"PARAMETERS RECEIVED: debug_raw={debug_raw}, raw_snippet_len={raw_snippet_len}, extra_wait_seconds={extra_wait_seconds}, dump_all={dump_all}")
-    
-    # FORCE DUMP ALL FOR DEBUGGING - REMOVE LATER
-    if not dump_all:
-        task_logger.warning("FORCING dump_all=True FOR DEBUGGING")
-        dump_all = True
 
     result = {
         "task_id": task_id,
@@ -554,6 +549,10 @@ async def run_scraper(
             context_options["proxy"] = proxy_config
             
         context = await browser.new_context(**context_options)
+        page = await context.new_page()
+        
+        # Apply stealth
+        await stealth_async(page)
         
         # GraphQL tracking variables
         graphql_snippets: list[str] = []
@@ -754,6 +753,15 @@ async def run_scraper(
 
         # Simulate behavior to load more content/comments/reactions
         await simulate_human_behavior(page, task_logger)
+        
+        # Aggressive scroll to trigger engagement stats
+        try:
+            await page.evaluate("window.scrollBy(0, 300)")
+            await asyncio.sleep(2)
+            await page.evaluate("window.scrollBy(0, -300)")
+            await asyncio.sleep(1)
+        except:
+            pass
 
         page_html = None
         page_text = None
@@ -842,9 +850,15 @@ async def run_scraper(
             task_logger.info(f"Parsing OG title: {og_title[:100]}...")
             
             # Extract reactions from OG title
-            og_reactions_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones)', og_title, re.IGNORECASE)
+            # Prioritize "X reactions" / "X reacciones"
+            og_reactions_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:reactions?|reacciones|personas reaccionaron)', og_title, re.IGNORECASE)
             if og_reactions_match:
                 scraped_data["reactions"] = og_reactions_match.group(1)
+            else:
+                 # Fallback for "X likes"
+                 og_likes_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:likes?|me gusta)', og_title, re.IGNORECASE)
+                 if og_likes_match:
+                     scraped_data["reactions"] = og_likes_match.group(1)
             
             # Extract shares from OG title
             og_shares_match = re.search(r'([\d,.]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)', og_title, re.IGNORECASE)
@@ -926,6 +940,24 @@ async def run_scraper(
                     data.video_poster = video.poster || null;
                 }
                 
+                // Specific stats capture (modern FB classes/structures)
+                // Look for the row that typically has reactions and comments
+                const statsSelectors = [
+                    'span > a[role="link"] > span > span', // Common for "799 personas"
+                    'div[data-visualcompletion="ignore-dynamic"] span[dir="auto"]',
+                    'span[data-sigil="feed_story_add_comment"]',
+                    'div[role="article"] div[data-ad-comet-preview="message"] + div span'
+                ];
+                
+                const foundStats = [];
+                statsSelectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => {
+                        const t = el.innerText.trim();
+                        if (t && /\d/.test(t) && t.length < 50) foundStats.push(t);
+                    });
+                });
+                data.dom_stats = foundStats;
+                
                 // Find timestamp/date
                 const timeLinks = document.querySelectorAll('a[role="link"]');
                 timeLinks.forEach(link => {
@@ -966,12 +998,25 @@ async def run_scraper(
             # Parse aria-labels for engagement data
             # Facebook ES format: "Me gusta: 263 personas", "Me encanta: 20 personas"
             reaction_types_total = 0
+            found_total_reactions_label = False
+            
             for label in js_data.get("aria_labels", []):
-                # Spanish reaction aria-labels: "Me gusta: X personas", "Me encanta: X personas", etc.
+                # LOOK FOR TOTAL FIRST: "799 reacciones" or "799 reactions" or "799 personas reaccionaron"
+                total_match = re.search(r'([\d,.]+)\s*(?:reactions?|reacciones|personas reaccionaron)', label, re.IGNORECASE)
+                if total_match:
+                    scraped_data["reactions"] = total_match.group(1)
+                    found_total_reactions_label = True
+                    task_logger.info(f"JS: Found TOTAL reactions in aria-label: {total_match.group(1)}")
+                    break # Prioritize total over sum
+
+                # Summing logic (only if we didn't find a total yet)
                 reaction_match = re.search(r'(?:Me gusta|Me encanta|Me divierte|Me asombra|Me entristece|Me enoja|Like|Love|Haha|Wow|Sad|Angry):\s*([\d,.]+)\s*persona', label, re.IGNORECASE)
                 if reaction_match:
-                    count = int(reaction_match.group(1).replace(',', '').replace('.', ''))
-                    reaction_types_total += count
+                    count_str = reaction_match.group(1).replace(',', '').replace('.', '')
+                    try:
+                        reaction_types_total += int(count_str)
+                    except:
+                        pass
                     
                 # Comments from aria-label
                 if not scraped_data.get("comments"):
@@ -1016,8 +1061,14 @@ async def run_scraper(
                 
                 # Reactions total: "Todas las reacciones:\n291"
                 if not scraped_data.get("reactions"):
-                    if "reacciones" in text.lower() or "reactions" in text.lower():
+                    # Prioritize patterns that strongly indicate a total
+                    if any(kw in text.lower() for kw in ["total de reacciones", "todas las reacciones", "all reactions"]):
                         m = re.search(r'([\d,.]+)', text)
+                        if m:
+                            scraped_data["reactions"] = m.group(1)
+                    elif "reacciones" in text.lower() or "reactions" in text.lower():
+                        # Be careful, if it's just "1 reacción", it might be a button
+                        m = re.search(r'([\d,.]+)\s*(?:reacciones?|reactions?)', text, re.IGNORECASE)
                         if m:
                             scraped_data["reactions"] = m.group(1)
             
@@ -1028,6 +1079,19 @@ async def run_scraper(
                 scraped_data["video_poster"] = js_data["video_poster"]
             if js_data.get("video_duration"):
                 scraped_data["video_duration_seconds"] = js_data["video_duration"]
+            
+            # Process dom_stats from JS (Stronger priority than OG/Title)
+            if js_data.get("dom_stats"):
+                for stat in js_data["dom_stats"]:
+                    if any(kw in stat.lower() for kw in ["reacciones", "reactions", "personas"]):
+                        # TOTAL OVERWRITE: We trust the DOM more than OG tags
+                        scraped_data["reactions"] = stat
+                        task_logger.info(f"JS: DOM text node found reactions (OVERWRITING): {stat}")
+
+                    if any(kw in stat.lower() for kw in ["comentarios", "comments"]):
+                        # TOTAL OVERWRITE: We trust the DOM more than OG tags
+                        scraped_data["comments"] = stat
+                        task_logger.info(f"JS: DOM text node found comments (OVERWRITING): {stat}")
             
             # Post date
             if js_data.get("post_date"):
@@ -1060,11 +1124,12 @@ async def run_scraper(
                         scraped_data["views"] = m.group(0).strip()
                         
             if not scraped_data.get("reactions"):
-                m = re.search(r'(?:Todas las reacciones:?\s*)([\d,.]+)', page_text, re.IGNORECASE)
+                # Spanish variations: "799 personas reaccionaron", "291 todas las reacciones"
+                m = re.search(r'([\d,.]+)\s*(?:personas\s*(?:más\s*)?reaccionaron|reacciones|reactions)', page_text, re.IGNORECASE)
                 if m:
                     scraped_data["reactions"] = m.group(1)
                 else:
-                    m = re.search(r'([\d,.]+)\s*(?:reactions?|reacciones)', page_text, re.IGNORECASE)
+                    m = re.search(r'(?:Todas las reacciones:?\s*)([\d,.]+)', page_text, re.IGNORECASE)
                     if m:
                         scraped_data["reactions"] = m.group(1)
             
@@ -1120,43 +1185,14 @@ async def run_scraper(
         except Exception:
             pass
 
-        scraped_data["diagnostic_graphql_snippets_count"] = len(graphql_snippets)
-        scraped_data["diagnostic_graphql_matches"] = graphql_matches
-        scraped_data["diagnostic_graphql_errors"] = graphql_errors
-        
-        scraped_data["diagnostic_graphql_errors"] = graphql_errors
-        
-        # DEBUG: Scan for ANY key containing 'view' or 'play' or 'count'
-        try:
-            if page_html:
-                # Expanded regex: look for keys with 'view', 'play', or ending in 'count'
-                # r'"(\w*(?:view|play|count)\w*)"\s*:\s*(\d+|"[^"]+")'
-                # We use re.IGNORECASE to catch View/Play
-                count_matches = list(re.finditer(r'"(\w*(?:view|play|count)\w*)"\s*:\s*(\d+|"[^"]+")', page_html, re.IGNORECASE))
-                interesting_counts = []
-                for m in count_matches:
-                    k = m.group(1)
-                    v = m.group(2)
-                    if any(x in k.lower() for x in ["pixel", "byte", "char", "word", "line", "width", "height", "loop"]): 
-                        continue
-                    interesting_counts.append(f"{k}:{v}")
-                    if len(interesting_counts) >= 50:
-                        break
-                scraped_data["diagnostic_all_counts"] = interesting_counts
-
-                # Specific Context Scanning
-                view_contexts = []
-                # Known anchors + potential view keys
-                for kw in ["reaction_count", "comment_count", "share_count", "view", "play", "video_view"]:
-                     view_contexts.extend(_search_context_around_keyword(page_html, kw))
-                
-                if view_contexts:
-                    scraped_data["diagnostic_view_context"] = view_contexts[:20]
-        except Exception as e:
-            scraped_data["diagnostic_error"] = str(e)
-
-        if view_contexts:
-            scraped_data["diagnostic_view_context"] = view_contexts[:10]
+        if debug_raw or dump_all:
+            scraped_data["diagnostic_graphql_snippets_count"] = len(graphql_snippets)
+            scraped_data["diagnostic_graphql_matches"] = graphql_matches
+            scraped_data["diagnostic_graphql_errors"] = graphql_errors
+            if graphql_snippets:
+                 scraped_data["raw_graphql_snippets"] = [s[:1000] for s in graphql_snippets[:3]]
+            if graphql_match_urls:
+                 scraped_data["raw_graphql_match_urls"] = graphql_match_urls[:10]
 
         
         # DEBUG: Always log snippets to see what we are getting
@@ -1173,6 +1209,17 @@ async def run_scraper(
                         break
             except Exception as e:
                 task_logger.warning(f"GraphQL views extraction error: {e}")
+
+        if not scraped_data.get("reactions") and graphql_snippets:
+            try:
+                for snippet in graphql_snippets:
+                    r = _extract_reactions_count_from_html(snippet)
+                    if r:
+                        scraped_data["reactions"] = r
+                        task_logger.info(f"GraphQL extraction: reactions={r}")
+                        break
+            except Exception as e:
+                task_logger.warning(f"GraphQL reactions extraction error: {e}")
 
         # ALWAYS include snippets for debugging now
         if graphql_snippets:
@@ -1322,33 +1369,29 @@ async def run_scraper(
             "image": image_primary,
             "images": images_list,
             "video_url": scraped_data.get("og_video_secure_url") or scraped_data.get("og_video_url") or scraped_data.get("og_video") or scraped_data.get("video_src"),
-            "video_type": scraped_data.get("og_video_type"),
             "video_duration_seconds": scraped_data.get("video_duration_seconds"),
             "video_thumbnail": scraped_data.get("og_image") or scraped_data.get("video_poster") or scraped_data.get("thumbnail"),
-            "reactions": reactions_raw,
             "reactions_count": reactions_count,
-            "reactions_raw": reactions_raw,
             "shares": scraped_data.get("shares"),
-            "comments": comments_raw,
             "comments_count": comments_count,
-            "comments_raw": comments_raw,
-            "views": views_raw,
             "views_count": views_count,
-            "views_raw": views_raw,
             "post_date": scraped_data.get("post_date"),
             "user_link": scraped_data.get("user_link"),
             "canonical_url": scraped_data.get("og_url"),
             "content_type": scraped_data.get("og_type"),
-            "raw_og_data": {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]},
-            "extracted_data": extracted_data,
-            "scrape_dump": scrape_dump,
-            "diagnostic": {
+        }
+
+        # Debug fields (only if requested)
+        if debug_raw or dump_all:
+            final_data["raw_og_data"] = {k: v for k, v in scraped_data.items() if k.startswith("og_") or k in ["meta_description", "page_title"]}
+            final_data["extracted_data"] = extracted_data
+            final_data["scrape_dump"] = scrape_dump
+            final_data["diagnostic"] = {
                 "final_url": scraped_data.get("diagnostic_final_url") or page.url,
                 "page_title": scraped_data.get("diagnostic_page_title") or scraped_data.get("page_title"),
                 "html_length": scraped_data.get("diagnostic_html_length") or (len(page_html) if page_html else None),
                 "og_tags_found": scraped_data.get("diagnostic_og_tags_found"),
-            },
-        }
+            }
         # Remove None values for cleaner output
         final_data = {k: v for k, v in final_data.items() if v is not None}
 
