@@ -52,6 +52,9 @@ class FacebookPostScraper(FacebookBaseScraper):
             return self.format_error("Browser not initialized")
 
         try:
+            # ---- INJECT COOKIES before navigation ----
+            await self.inject_cookies()
+
             # ---- NAVIGATE ----
             self.logger.info("Navigating to page...")
             try:
