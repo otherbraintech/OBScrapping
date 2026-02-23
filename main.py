@@ -168,9 +168,11 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
     added_count = 0
     if text_context:
         t_low = text_context.lower()
-        if any(kw in t_low for kw in ["tú y", "usted y", "you and", "tú, ", "usted, ", "you, "]):
-            # If it's "You, Name and 799 others" or "You and 1 other", we add the current user
+        if any(kw in t_low for kw in ["tú y ", "usted y ", "you and "]):
             added_count = 1
+        elif any(kw in t_low for kw in ["tú, ", "usted, ", "you, "]):
+            # "You, Name and 799 others" -> 2 named people + 799 others = 801
+            added_count = 2
 
     s = s.replace(" ", "")
     # Handle Spanish format like "5,5mil" / "5mil"
