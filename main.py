@@ -116,10 +116,10 @@ def _extract_reactions_count_from_text(text: str) -> Optional[str]:
     patterns = [
         # Authenticated variations: "Tú, Mario y 798 personas más", "You and 1 other"
         r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
+        # "Todas las reacciones: 821" / "Total reactions: 821"
+        r"(?:Todas las reacciones|Total reactions|Reacciones):\s*([\d.,]+[KMkm]?)",
         # Standard variations with "reactions" or "reacciones"
         r"([\d.,]+[KMkm]?)\s*(?:reactions?|reaccione?s|personas reaccionaron)",
-        # Simple "X reacciones" fallback
-        r"([\d.,]+[KMkm]?)\s*reaccione?s",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -1042,14 +1042,21 @@ async def run_scraper(
             found_total_reactions_label = False
             
             for label in js_data.get("aria_labels", []):
-                # LOOK FOR TOTAL FIRST
+                # Skip labels that look like they belong to a comment
+                if "mira quién ha reaccionado" in label.lower() or "consulta quién reaccionó" in label.lower():
+                    # We might still want to extract the number but flagged as sub-count
+                    pass
+
                 total_r = _extract_reactions_count_from_text(label)
                 if total_r:
-                    scraped_data["reactions"] = total_r
-                    scraped_data["reactions_context"] = label
-                    found_total_reactions_label = True
-                    task_logger.info(f"JS: Found total reactions in aria-label: {total_r}")
-                    break
+                    # If we found another one, keep the largest
+                    old_val = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
+                    new_val = _normalize_count(total_r, label) or 0
+                    if new_val > old_val:
+                        scraped_data["reactions"] = total_r
+                        scraped_data["reactions_context"] = label
+                        found_total_reactions_label = True
+                        task_logger.info(f"JS: Found better reactions in aria-label: {new_val} (from '{label}')")
 
                 # Summing logic (as fallback)
                 reaction_match = re.search(r'(?:Me gusta|Me encanta|Me divierte|Me asombra|Me entristece|Me enoja|Like|Love|Haha|Wow|Sad|Angry):\s*([\d,.]+)\s*persona', label, re.IGNORECASE)
