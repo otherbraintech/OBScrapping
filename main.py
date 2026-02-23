@@ -116,8 +116,10 @@ def _extract_reactions_count_from_text(text: str) -> Optional[str]:
     patterns = [
         # Authenticated variations: "Tú, Mario y 798 personas más", "You and 1 other"
         r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
-        # Standard variations
-        r"([\d.,]+[KMkm]?)\s*(?:reactions?|reacciones|personas reaccionaron)",
+        # Standard variations with "reactions" or "reacciones"
+        r"([\d.,]+[KMkm]?)\s*(?:reactions?|reaccione?s|personas reaccionaron)",
+        # Simple "X reacciones" fallback
+        r"([\d.,]+[KMkm]?)\s*reaccione?s",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
