@@ -499,6 +499,7 @@ class FacebookPostScraper(FacebookBaseScraper):
 
                 except Exception as e:
                     self.logger.warning(f"GraphQL image extraction error: {e}")
+                    html_images = []
 
             # ---- NORMALIZE COUNTS ----
             for field in ["reactions", "comments", "shares", "views"]:
@@ -507,6 +508,29 @@ class FacebookPostScraper(FacebookBaseScraper):
                     normalized = _normalize_count(str(raw))
                     if normalized is not None:
                         scraped_data[f"{field}_count"] = normalized
+
+            # ---- DEBUG BLOCK (always included for diagnosis) ----
+            # Shows what each extraction layer found. Remove or gate behind debug_raw once stable.
+            try:
+                debug_info: dict = {
+                    "final_url": self.page.url if self.page else url,
+                    "html_length": len(page_html) if page_html else 0,
+                    "layer6_images_found": len(html_images) if 'html_images' in dir() else -1,
+                    "layer6_image_urls": html_images[:20] if 'html_images' in dir() else [],
+                }
+
+                # Include a 3000-char HTML snippet containing the first fbcdn URI found
+                # so you can examine the surrounding JSON structure
+                if page_html:
+                    m_idx = page_html.find("fbcdn.net")
+                    if m_idx >= 0:
+                        snip_start = max(0, m_idx - 200)
+                        snip_end = min(len(page_html), m_idx + 2800)
+                        debug_info["html_fbcdn_snippet"] = page_html[snip_start:snip_end]
+
+                scraped_data["_debug"] = debug_info
+            except Exception as de:
+                scraped_data["_debug"] = {"error": str(de)}
 
             # ---- CLEAN OUTPUT ----
             scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
