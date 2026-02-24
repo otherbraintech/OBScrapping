@@ -1,9 +1,305 @@
 import asyncio
-from typing import Dict, Any
+import re
+import html as _html
+from datetime import datetime
+from typing import Dict, Any, Optional
+
 from .base import FacebookBaseScraper
+from .utils import (
+    _extract_reactions_count_from_text,
+    _extract_comments_count_from_text,
+    _extract_shares_count_from_text,
+    _extract_views_count_from_text,
+    _extract_reactions_count_from_html,
+    _extract_engagement_from_html,
+    _normalize_count,
+)
+
+OG_TAGS = [
+    "og:title", "og:description", "og:image", "og:url",
+    "og:video", "og:video:url", "og:video:secure_url",
+    "og:video:type", "og:video:width", "og:video:height",
+    "og:type", "og:site_name"
+]
 
 class FacebookReelScraper(FacebookBaseScraper):
+
+    async def _scroll_page(self):
+        """Scroll to trigger lazy loading of engagement data."""
+        if not self.page:
+            return
+        try:
+            for _ in range(3):
+                await self.page.evaluate("window.scrollBy(0, 600)")
+                await asyncio.sleep(0.8)
+            await self.page.evaluate("window.scrollTo(0, 0)")
+            await asyncio.sleep(1.0)
+        except Exception:
+            pass
+
     async def run(self, url: str, **kwargs) -> Dict[str, Any]:
         self.logger.info(f"Running FacebookReelScraper for {url}")
-        # Reels specific logic
-        return {"status": "success", "type": "reel", "url": url}
+
+        debug_raw: bool = kwargs.get("debug_raw", False)
+        extra_wait: float = kwargs.get("extra_wait_seconds", 2.0)
+
+        scraped_data: Dict[str, Any] = {
+            "task_id": self.task_id,
+            "requested_url": url,
+            "scraped_at": datetime.utcnow().isoformat(),
+            "post_type": "video"  # Reels are always videos
+        }
+
+        if not self.page:
+            return self.format_error("Browser not initialized")
+
+        try:
+            # ---- INJECT COOKIES before navigation ----
+            await self.inject_cookies()
+
+            # ---- NAVIGATE ----
+            self.logger.info("Navigating to Reel page...")
+            try:
+                # Reels URLs are sometimes tricky, Playwright handles redirects well
+                await self.page.goto(url, wait_until="networkidle", timeout=60000)
+            except Exception:
+                self.logger.warning("Navigation timed out, proceeding anyway...")
+
+            # Wait for page to settle
+            await asyncio.sleep(max(extra_wait, 3.0))
+
+            # ---- CHECK FOR HARD BLOCK ----
+            restriction_msg = await self.check_restricted()
+            if restriction_msg:
+                return self.format_error(restriction_msg)
+
+            # ---- SCROLL to trigger lazy loading ----
+            await self._scroll_page()
+
+            # ---- LAYER 1: OG META TAGS ----
+            self.logger.info("Extracting OG meta tags...")
+            try:
+                head_val = await self.page.evaluate("document.head.innerHTML")
+                head_html: str = str(head_val) if head_val else ""
+            except Exception:
+                head_html = ""
+
+            page_html = await self.page.content()
+            scraped_data["diagnostic_html_length"] = len(page_html)
+
+            og_found = 0
+            for tag in OG_TAGS:
+                try:
+                    patterns = [
+                        f'<meta[^>]+property="{tag}"[^>]+content="([^"]+)"',
+                        f'<meta[^>]+content="([^"]+)"[^>]+property="{tag}"'
+                    ]
+                    found_val = None
+                    for pat in patterns:
+                        m = re.search(pat, head_html, re.IGNORECASE)
+                        if m:
+                            found_val = _html.unescape(m.group(1))
+                            break
+                    if not found_val:
+                        el = self.page.locator(f'meta[property="{tag}"]')
+                        if await el.count() > 0:
+                            found_val = await el.first.get_attribute("content")
+                    if found_val:
+                        key = tag.replace(":", "_").replace(".", "_")
+                        scraped_data[key] = found_val
+                        og_found += 1
+                except Exception as e:
+                    self.logger.warning(f"OG tag {tag} error: {e}")
+
+            # Standard meta description
+            try:
+                meta_desc = self.page.locator('meta[name="description"]')
+                if await meta_desc.count() > 0:
+                    scraped_data["meta_description"] = await meta_desc.first.get_attribute("content")
+            except Exception:
+                pass
+
+            # Page title
+            try:
+                scraped_data["page_title"] = await self.page.title()
+            except Exception:
+                pass
+
+            # ---- LAYER 2: STRUCTURED FIELDS FROM OG DATA ----
+            og_title = scraped_data.get("og_title", "")
+            og_description = scraped_data.get("og_description", "")
+            page_title = scraped_data.get("page_title", "")
+
+            # Caption = og:description
+            if og_description:
+                scraped_data["caption"] = og_description
+
+            # Username
+            if og_title and not scraped_data.get("username"):
+                scraped_data["username"] = og_title
+
+            if page_title and " - " in page_title:
+                parts = page_title.rsplit(" - ", 1)
+                if len(parts) == 2:
+                    scraped_data["username"] = parts[1].strip()
+                    if not scraped_data.get("caption"):
+                        scraped_data["caption"] = parts[0].strip()
+
+            # Parse OG title for engagement
+            if og_title:
+                r = _extract_reactions_count_from_text(og_title)
+                if r:
+                    scraped_data["reactions"] = r
+                    scraped_data["reactions_context"] = og_title
+                s = _extract_shares_count_from_text(og_title)
+                if s: scraped_data["shares"] = s
+                c = _extract_comments_count_from_text(og_title)
+                if c: scraped_data["comments"] = c
+                v = _extract_views_count_from_text(og_title)
+                if v: scraped_data["views"] = v
+
+            # ---- LAYER 3: JS EVALUATION ----
+            self.logger.info("Running JS extraction...")
+            try:
+                js_data = await self.page.evaluate("""() => {
+                    const data = {};
+                    const mainContainer = document.querySelector('div[role="main"]')
+                        || document.querySelector('div[role="article"]')
+                        || document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
+                        || document;
+
+                    // Aria labels
+                    const ariaLabels = [];
+                    mainContainer.querySelectorAll('[aria-label]').forEach(el => {
+                        const label = el.getAttribute('aria-label');
+                        if (label) ariaLabels.push(label);
+                    });
+                    data.aria_labels = ariaLabels;
+
+                    // Engagement texts from spans with numbers
+                    const engagementTexts = [];
+                    mainContainer.querySelectorAll('span').forEach(span => {
+                        const text = span.innerText ? span.innerText.trim() : '';
+                        if (text && text.length < 150 && /\\d/.test(text)) {
+                            engagementTexts.push(text);
+                        }
+                    });
+                    data.engagement_texts = engagementTexts;
+
+                    // Video detection
+                    const video = mainContainer.querySelector('video');
+                    if (video) {
+                        data.has_video = true;
+                        data.video_src = video.src || null;
+                        data.video_poster = video.poster || null;
+                        data.video_duration = video.duration || null;
+                    }
+
+                    // Post date from aria-label on time links
+                    mainContainer.querySelectorAll('a[role="link"]').forEach(link => {
+                        const ariaLabel = link.getAttribute('aria-label');
+                        if (ariaLabel && /\\d/.test(ariaLabel) && (
+                            /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(ariaLabel) ||
+                            /\\d{1,2}\\s*(de\\s+)?\\w+\\s*(de\\s+)?\\d{4}/i.test(ariaLabel)
+                        )) {
+                            data.post_date = ariaLabel;
+                        }
+                    });
+
+                    // Caption from DOM
+                    const captionEl = mainContainer.querySelector('[data-ad-comet-preview="message"]')
+                        || mainContainer.querySelector('div[dir="auto"] > div[dir="auto"]')
+                        || mainContainer.querySelector('div[id^="mount_0_0"] span[dir="auto"]');
+                    if (captionEl) {
+                        data.caption = captionEl.innerText ? captionEl.innerText.trim() : null;
+                    }
+
+                    // Username from DOM
+                    const usernameEl = mainContainer.querySelector('h2 a[role="link"]')
+                        || mainContainer.querySelector('span[role="link"] strong')
+                        || mainContainer.querySelector('a[href*="/reel/"] + div span');
+                    if (usernameEl) {
+                        data.username = usernameEl.innerText ? usernameEl.innerText.trim() : null;
+                    }
+
+                    return data;
+                }""")
+
+                if js_data.get("post_date"):
+                    scraped_data["post_date"] = js_data["post_date"]
+                if js_data.get("caption"):
+                    scraped_data["caption"] = js_data["caption"]
+                if js_data.get("username"):
+                    scraped_data["username"] = js_data["username"]
+                if js_data.get("video_src"):
+                    scraped_data["video_src"] = js_data["video_src"]
+                    if not scraped_data.get("og_image"):
+                        scraped_data["video_poster"] = js_data.get("video_poster")
+                if js_data.get("video_duration"):
+                    scraped_data["video_duration_seconds"] = js_data["video_duration"]
+
+                # Parse aria-labels and texts for engagement
+                all_raw_texts = js_data.get("aria_labels", []) + js_data.get("engagement_texts", [])
+                for text in all_raw_texts:
+                    low_text = text.lower()
+                    if "mira quién ha reaccionado" in low_text or "consulta quién reaccionó" in low_text:
+                        continue
+                    
+                    r = _extract_reactions_count_from_text(text)
+                    if r:
+                        old_v = _normalize_count(scraped_data.get("reactions")) or 0
+                        new_v = _normalize_count(r) or 0
+                        if new_v > old_v:
+                            scraped_data["reactions"] = r
+                            scraped_data["reactions_context"] = text
+                    
+                    c = _extract_comments_count_from_text(text)
+                    if c:
+                        old_v = _normalize_count(scraped_data.get("comments")) or 0
+                        new_v = _normalize_count(c) or 0
+                        if new_v > old_v: scraped_data["comments"] = c
+
+                    v = _extract_views_count_from_text(text)
+                    if v:
+                        old_v = _normalize_count(scraped_data.get("views")) or 0
+                        new_v = _normalize_count(v) or 0
+                        if new_v > old_v: scraped_data["views"] = v
+
+            except Exception as e:
+                self.logger.warning(f"JS extraction error in Reels: {e}")
+
+            # ---- LAYER 4: GraphQL JSON EMBEDDED IN HTML ----
+            if page_html:
+                try:
+                    embedded = _extract_engagement_from_html(page_html)
+                    if embedded.get("reactions") and not scraped_data.get("reactions"):
+                        scraped_data["reactions"] = str(embedded["reactions"])
+                    if embedded.get("comments") and not scraped_data.get("comments"):
+                        scraped_data["comments"] = str(embedded["comments"])
+                    if embedded.get("shares") and not scraped_data.get("shares"):
+                        scraped_data["shares"] = str(embedded["shares"])
+                    if embedded.get("views") and not scraped_data.get("views"):
+                        scraped_data["views"] = str(embedded["views"])
+                    if embedded:
+                        self.logger.info(f"GraphQL Reels extraction found: {embedded}")
+                except Exception as e:
+                    self.logger.warning(f"GraphQL Reels extraction error: {e}")
+
+            # ---- NORMALIZE COUNTS ----
+            for field in ["reactions", "comments", "shares", "views"]:
+                raw = scraped_data.get(field)
+                if raw:
+                    normalized = _normalize_count(str(raw))
+                    if normalized is not None:
+                        scraped_data[f"{field}_count"] = normalized
+
+            # ---- CLEAN OUTPUT ----
+            scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
+            return {
+                "status": "success",
+                "data": scraped_data
+            }
+
+        except Exception as e:
+            self.logger.error(f"FacebookReelScraper failed: {str(e)}", exc_info=True)
+            return self.format_error(str(e))
