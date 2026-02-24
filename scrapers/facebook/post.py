@@ -212,68 +212,72 @@ class FacebookPostScraper(FacebookBaseScraper):
                     }
 
                     // ---- ALL IMAGES EXTRACTION ----
-                    // Collect all unique fbcdn images (these are actual post images)
                     const seenSrcs = new Set();
                     const allImages = [];
 
-                    // Strategy 1: images inside the post media area
-                    // Facebook wraps multi-image posts in a grid or carousel container
+                    // Broad selectors for images that are part of the post content
                     const mediaSelectors = [
-                        'div[data-pagelet="MediaViewerPhoto"] img',
-                        'div[role="img"] img[src*="fbcdn"]',
-                        'a[href*="/photo/"] img[src*="fbcdn"]',
-                        'a[href*="/photos/"] img[src*="fbcdn"]',
-                        'div[class*="photo"] img[src*="fbcdn"]',
+                        'div[data-ad-comet-preview="message"] + div img', // Standard post images
+                        'div[role="article"] img[src*="fbcdn"]',
+                        'div[role="main"] img[src*="fbcdn"]',
+                        'a[href*="/photo/"] img',
+                        'a[href*="/photos/"] img',
+                        'div[class*="photo"] img',
                         'img[src*="fbcdn"][alt]',
                     ];
 
                     for (const sel of mediaSelectors) {
                         mainContainer.querySelectorAll(sel).forEach(img => {
                             const src = img.src || '';
-                            // Filter out tiny thumbnails (profile pics, icons)
-                            // and only keep images with meaningful dimensions
                             if (src && src.includes('fbcdn') && !seenSrcs.has(src)) {
+                                // Filter out tiny thumbnails (profile pics are usually smaller than 100x100 in posts)
+                                // but post images are much larger
                                 const width = img.naturalWidth || img.width || 0;
                                 const height = img.naturalHeight || img.height || 0;
-                                // Only include images that look like post content
-                                if (width > 100 || height > 100 || (width === 0 && height === 0)) {
-                                    seenSrcs.add(src);
-                                    allImages.push({
-                                        src: src,
-                                        alt: img.alt || '',
-                                        width: width,
-                                        height: height,
-                                    });
+                                
+                                // Some FB layouts don't have dims immediately, but we can check the URL for clue or just keep if it looks like a content image
+                                // Profile images usually have /cp/ or "profile" in URL
+                                if (!src.includes('/cp/') && !src.includes('profile')) {
+                                    if (width > 120 || height > 120 || (width === 0 && height === 0)) {
+                                        seenSrcs.add(src);
+                                        allImages.push({
+                                            src: src,
+                                            alt: img.alt || '',
+                                            width: width,
+                                            height: height,
+                                        });
+                                    }
                                 }
                             }
                         });
-                        if (allImages.length > 1) break; // found gallery images, stop
                     }
 
-                    // Also look for gallery count indicator ("X photos")
-                    const galleryCountEl = mainContainer.querySelector('div[class*="photoCount"], span[class*="photoCount"]');
-                    if (galleryCountEl) {
-                        const countText = galleryCountEl.innerText || '';
-                        const m = countText.match(/(\\d+)/);
-                        if (m) data.gallery_count_indicator = parseInt(m[1]);
-                    }
-
-                    // Strategy 2: count <a> links to /photo/ pages (each = one image in gallery)
+                    // Count photo links (each represents an image in a gallery)
                     const photoLinks = new Set();
-                    mainContainer.querySelectorAll('a[href*="/photo/"]').forEach(a => {
+                    mainContainer.querySelectorAll('a[href*="/photo/"], a[href*="/photos/"]').forEach(a => {
                         const href = a.getAttribute('href') || '';
-                        if (href && !href.includes('profile')) photoLinks.add(href.split('?')[0]);
+                        if (href && !href.includes('profile')) {
+                            // Extract the base photo ID/URL to avoid counting duplicates
+                            const photoId = href.split('?')[0];
+                            photoLinks.add(photoId);
+                        }
                     });
                     data.photo_link_count = photoLinks.size;
+
+                    // Gallery indicator ("+X")
+                    const moreImagesEl = mainContainer.querySelector('div[class*="photo"] span:not(:empty)');
+                    if (moreImagesEl && moreImagesEl.innerText.includes('+')) {
+                        const plusNum = parseInt(moreImagesEl.innerText.replace('+', ''));
+                        if (!isNaN(plusNum)) data.gallery_plus_count = plusNum;
+                    }
 
                     data.all_images = allImages;
                     data.image_count = allImages.length;
 
                     // ---- POST TYPE DETECTION ----
-                    // priority: video > multi-image > single-image > text
                     if (data.has_video) {
                         data.post_type = 'video';
-                    } else if (data.photo_link_count > 1 || allImages.length > 1) {
+                    } else if (data.photo_link_count > 1 || allImages.length > 1 || data.gallery_plus_count) {
                         data.post_type = 'multi_image';
                     } else if (allImages.length === 1 || data.photo_link_count === 1) {
                         data.post_type = 'single_image';
@@ -334,35 +338,39 @@ class FacebookPostScraper(FacebookBaseScraper):
                 if js_data.get("video_duration"):
                     scraped_data["video_duration_seconds"] = js_data["video_duration"]
 
-                # All images — list of {src, alt, width, height}
-                all_images = js_data.get("all_images", [])
-                if all_images:
-                    scraped_data["images"] = [img["src"] for img in all_images]
-                    scraped_data["image_count"] = len(all_images)
+                # Post type synchronization
+                images = [img["src"] for img in js_data.get("all_images", [])]
+                image_count = len(images)
+                photo_link_count = js_data.get("photo_link_count", 0)
+                gallery_plus = js_data.get("gallery_plus_count", 0)
+                has_video = js_data.get("has_video", False)
+
+                # Use final extracted counts to decide post_type
+                if has_video:
+                    final_type = "video"
+                elif image_count > 1 or photo_link_count > 1 or gallery_plus > 0:
+                    final_type = "multi_image"
+                elif image_count == 1 or photo_link_count == 1 or scraped_data.get("og_image"):
+                    final_type = "single_image"
+                else:
+                    final_type = "text"
+
+                scraped_data["post_type"] = final_type
+
+                # Final images list
+                if images:
+                    scraped_data["images"] = images
+                    scraped_data["image_count"] = image_count
                 elif scraped_data.get("og_image"):
-                    # Fall back to og:image as the only image
                     scraped_data["images"] = [scraped_data["og_image"]]
                     scraped_data["image_count"] = 1
-
-                # Final Post Type Consolidation
-                # Priority: JS detected type > OG type hint > Image count logic
-                js_type = js_data.get("post_type")
-                og_type = scraped_data.get("og_type", "").lower()
-                has_video_hint = "video" in og_type or "reel" in og_type or scraped_data.get("video_src")
-                
-                if has_video_hint:
-                    scraped_data["post_type"] = "video"
-                elif js_type and js_type != "text":
-                    scraped_data["post_type"] = js_type
-                elif scraped_data.get("image_count", 0) > 1:
-                    scraped_data["post_type"] = "multi_image"
-                elif scraped_data.get("image_count", 0) == 1:
-                    scraped_data["post_type"] = "single_image"
                 else:
-                    scraped_data["post_type"] = js_type or "text"
+                    scraped_data["images"] = []
+                    scraped_data["image_count"] = 0
 
-                # Diagnostic: photo link count (how many /photo/ anchors in DOM)
-                scraped_data["photo_link_count"] = js_data.get("photo_link_count", 0)
+                scraped_data["photo_link_count"] = photo_link_count
+                if gallery_plus:
+                    scraped_data["gallery_plus_count"] = gallery_plus
 
 
                 # Parse aria-labels for engagement

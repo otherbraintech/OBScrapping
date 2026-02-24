@@ -235,35 +235,27 @@ class FacebookReelScraper(FacebookBaseScraper):
                     scraped_data["video_src"] = js_data["video_src"]
                     if not scraped_data.get("og_image"):
                         scraped_data["video_poster"] = js_data.get("video_poster")
-                if js_data.get("video_duration"):
-                    scraped_data["video_duration_seconds"] = js_data["video_duration"]
+                # Post type synchronization
+                images = [img["src"] for img in js_data.get("all_images", [])] if "all_images" in js_data else []
+                image_count = len(images)
+                has_video = js_data.get("has_video", True) # Default true for reels
 
-                # Parse aria-labels and texts for engagement
-                all_raw_texts = js_data.get("aria_labels", []) + js_data.get("engagement_texts", [])
-                for text in all_raw_texts:
-                    low_text = text.lower()
-                    if "mira quién ha reaccionado" in low_text or "consulta quién reaccionó" in low_text:
-                        continue
-                    
-                    r = _extract_reactions_count_from_text(text)
-                    if r:
-                        old_v = _normalize_count(scraped_data.get("reactions")) or 0
-                        new_v = _normalize_count(r) or 0
-                        if new_v > old_v:
-                            scraped_data["reactions"] = r
-                            scraped_data["reactions_context"] = text
-                    
-                    c = _extract_comments_count_from_text(text)
-                    if c:
-                        old_v = _normalize_count(scraped_data.get("comments")) or 0
-                        new_v = _normalize_count(c) or 0
-                        if new_v > old_v: scraped_data["comments"] = c
+                if has_video:
+                    scraped_data["post_type"] = "video"
+                elif image_count > 1:
+                    scraped_data["post_type"] = "multi_image"
+                elif image_count == 1 or scraped_data.get("og_image"):
+                    scraped_data["post_type"] = "single_image"
+                else:
+                    scraped_data["post_type"] = "text"
 
-                    v = _extract_views_count_from_text(text)
-                    if v:
-                        old_v = _normalize_count(scraped_data.get("views")) or 0
-                        new_v = _normalize_count(v) or 0
-                        if new_v > old_v: scraped_data["views"] = v
+                # Final images list
+                if images:
+                    scraped_data["images"] = images
+                    scraped_data["image_count"] = image_count
+                elif scraped_data.get("og_image"):
+                    scraped_data["images"] = [scraped_data["og_image"]]
+                    scraped_data["image_count"] = 1
 
             except Exception as e:
                 self.logger.warning(f"JS extraction error in Reels: {e}")
