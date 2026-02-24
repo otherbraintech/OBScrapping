@@ -208,11 +208,24 @@ class FacebookPostScraper(FacebookBaseScraper):
                         data.video_duration = video.duration || null;
                     }
 
-                    // Post image (first meaningful image)
-                    const imgs = mainContainer.querySelectorAll('img[src*="fbcdn"]');
-                    if (imgs.length > 0) {
-                        data.post_image = imgs[0].src;
-                    }
+                    // ALL post images (album/carousel support)
+                    // Filter: must be fbcdn URLs, not tiny avatars/icons
+                    const seenUrls = new Set();
+                    const allImages = [];
+                    mainContainer.querySelectorAll('img[src*="fbcdn"]').forEach(img => {
+                        const src = img.src || '';
+                        // Skip profile pics (p_) and very small UI elements
+                        if (!src || seenUrls.has(src)) return;
+                        if (src.includes('_s.jpg') || src.includes('_t.jpg')) return;
+                        if (src.includes('profile') && src.includes('picture')) return;
+                        // Natural image must be at least 200px on its longest side
+                        const w = img.naturalWidth || img.width || 0;
+                        const h = img.naturalHeight || img.height || 0;
+                        if (w < 200 && h < 200) return;
+                        seenUrls.add(src);
+                        allImages.push(src);
+                    });
+                    data.all_images = allImages;
 
                     // Post date from aria-label on time links
                     mainContainer.querySelectorAll('a[role="link"]').forEach(link => {
@@ -266,8 +279,24 @@ class FacebookPostScraper(FacebookBaseScraper):
                     scraped_data["video_poster"] = js_data.get("video_poster")
                 if js_data.get("video_duration"):
                     scraped_data["video_duration_seconds"] = js_data["video_duration"]
-                if js_data.get("post_image") and not scraped_data.get("og_image"):
-                    scraped_data["post_image"] = js_data["post_image"]
+
+                # Merge all images: og_image first + additional album images
+                all_images_set = []
+                og_img = scraped_data.get("og_image")
+                if og_img:
+                    all_images_set.append(og_img)
+                for img_url in js_data.get("all_images", []):
+                    if img_url not in all_images_set:
+                        all_images_set.append(img_url)
+
+                if len(all_images_set) > 1:
+                    scraped_data["images"] = all_images_set
+                    scraped_data["image_count"] = len(all_images_set)
+                    self.logger.info(f"Found {len(all_images_set)} images in post")
+                elif og_img:
+                    scraped_data["images"] = [og_img]
+                    scraped_data["image_count"] = 1
+
 
                 # Parse aria-labels for engagement
                 for label in js_data.get("aria_labels", []):
