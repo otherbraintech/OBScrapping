@@ -303,25 +303,76 @@ class FacebookReelScraper(FacebookBaseScraper):
                     self.logger.warning(f"GraphQL Reels extraction error: {e}")
 
             # ---- LAYER 5: HTML VIDEO URL SCAN ----
-            # Extract .mp4 video URLs from inline fbcdn JSON (fallback if og:video empty)
+            # Extract .mp4 video URLs — clean HTML entities, filter to target video only
             video_url_found = scraped_data.get("video_url")
             if not video_url_found and page_html:
                 try:
+                    # Extract target video ID from og_url (e.g. /videos/.../3597741687035400/)
+                    target_video_id: Optional[str] = None
+                    og_url = scraped_data.get("og_url", "")
+                    vid_id_match = re.search(r'/(\d{10,})', og_url)
+                    if vid_id_match:
+                        target_video_id = vid_id_match.group(1)
+                        self.logger.info(f"Target video_id: {target_video_id}")
+
+                    # Find all .mp4 URLs (both clean and DASH-manifest encoded)
                     mp4_pattern = re.compile(
-                        r'https?:\\?/\\?/video[^"\' <>\s]+\.mp4[^"\' <>\s]*',
+                        r'https?:(?:\\?/\\?/|//)?video[^"\'<>\s\u003C]+\.mp4[^"\'<>\s\u003C]*',
                         re.IGNORECASE
                     )
-                    mp4_urls = []
+
+                    all_mp4: list = []
                     seen_mp4: set = set()
+
                     for mp4m in mp4_pattern.finditer(page_html):
-                        raw_mp4 = mp4m.group(0).replace("\\/", "/").rstrip('.,;)')
-                        if raw_mp4 not in seen_mp4:
-                            seen_mp4.add(raw_mp4)
-                            mp4_urls.append(raw_mp4)
-                    if mp4_urls:
-                        scraped_data["video_url"] = mp4_urls[0]
-                        scraped_data["video_url_all"] = mp4_urls
-                        self.logger.info(f"HTML mp4 scan found {len(mp4_urls)} video URLs")
+                        raw = mp4m.group(0)
+
+                        # Clean: unescape JSON slashes
+                        url = raw.replace("\\/", "/")
+
+                        # Clean: unescape HTML entities (&amp; → &, &#x3C; → <, etc.)
+                        try:
+                            url = _html.unescape(url)
+                        except Exception:
+                            pass
+
+                        # Clean: strip trailing XML tags and other junk
+                        url = re.sub(r'[<\u003C].*$', '', url)  # cut at < or \u003C
+                        url = url.rstrip('.,;)\'"')
+
+                        # Skip if clearly not a full URL
+                        if not url.startswith("http"):
+                            continue
+
+                        # Skip audio-only streams (they can't be played standalone)
+                        if "strext=1" in url or "audio" in url.split("?")[0]:
+                            continue
+
+                        if url not in seen_mp4:
+                            seen_mp4.add(url)
+                            all_mp4.append(url)
+
+                    # Filter to target video_id if we know it
+                    if target_video_id and all_mp4:
+                        filtered = [u for u in all_mp4 if target_video_id in u]
+                        if filtered:
+                            all_mp4 = filtered
+
+                    if all_mp4:
+                        # Prefer progressive/tagged URLs (best for direct download)
+                        # Priority order: 1080p → 720p → 540p → any
+                        def quality_score(u: str) -> int:
+                            if "1080" in u: return 4
+                            if "720" in u: return 3
+                            if "540" in u: return 2
+                            if "360" in u: return 1
+                            return 0
+
+                        all_mp4.sort(key=quality_score, reverse=True)
+                        scraped_data["video_url"] = all_mp4[0]
+                        scraped_data["video_url_all"] = all_mp4[:5]  # max 5 versions
+                        self.logger.info(f"HTML mp4 scan: {len(all_mp4)} URLs for video_id={target_video_id}")
+
                 except Exception as e:
                     self.logger.warning(f"HTML mp4 scan error: {e}")
 
