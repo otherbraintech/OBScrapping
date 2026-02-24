@@ -509,28 +509,25 @@ class FacebookPostScraper(FacebookBaseScraper):
                     if normalized is not None:
                         scraped_data[f"{field}_count"] = normalized
 
-            # ---- DEBUG BLOCK (always included for diagnosis) ----
-            # Shows what each extraction layer found. Remove or gate behind debug_raw once stable.
-            try:
-                debug_info: dict = {
-                    "final_url": self.page.url if self.page else url,
-                    "html_length": len(page_html) if page_html else 0,
-                    "layer6_images_found": len(html_images) if 'html_images' in dir() else -1,
-                    "layer6_image_urls": html_images[:20] if 'html_images' in dir() else [],
-                }
-
-                # Include a snippet around the first scontent photo CDN URL
-                # (scontent-*.fbcdn.net = photos; static.xx.fbcdn.net = icons/UI - skip those)
-                if page_html:
-                    m_idx = page_html.find("scontent")
-                    if m_idx >= 0:
-                        snip_start = max(0, m_idx - 200)
-                        snip_end = min(len(page_html), m_idx + 2800)
-                        debug_info["html_scontent_snippet"] = page_html[snip_start:snip_end]
-
-                scraped_data["_debug"] = debug_info
-            except Exception as de:
-                scraped_data["_debug"] = {"error": str(de)}
+            # ---- DEBUG BLOCK (only when debug_raw=True) ----
+            if debug_raw:
+                try:
+                    html_images_ref = html_images if 'html_images' in dir() else []
+                    debug_info: dict = {
+                        "final_url": self.page.url if self.page else url,
+                        "html_length": len(page_html) if page_html else 0,
+                        "layer6_images_found": len(html_images_ref),
+                        "layer6_image_urls": html_images_ref[:20],
+                    }
+                    if page_html:
+                        m_idx = page_html.find("scontent")
+                        if m_idx >= 0:
+                            snip_start = max(0, m_idx - 200)
+                            snip_end = min(len(page_html), m_idx + 2800)
+                            debug_info["html_scontent_snippet"] = page_html[snip_start:snip_end]
+                    scraped_data["_debug"] = debug_info
+                except Exception as de:
+                    scraped_data["_debug"] = {"error": str(de)}
 
             # ---- CLEAN OUTPUT ----
             scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
