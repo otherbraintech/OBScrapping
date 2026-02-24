@@ -144,52 +144,56 @@ def _extract_images_from_html(html: str) -> list:
     """
     Extracts all post image URLs from Facebook's inline GraphQL JSON blobs.
 
-    Facebook embeds media data (including ALL gallery images) in <script> tags
-    even for unauthenticated users. The DOM may only show 1 image grid tile,
-    but all image URIs are present in the JSON payload.
+    Key insight from debugging:
+    - Facebook embeds React state with photo data deep in the 1MB+ HTML
+    - Photo CDN uses scontent-*.fbcdn.net or scontent.*.fbcdn.net 
+    - UI/icon CDN uses static.xx.fbcdn.net (must be EXCLUDED)
+    - JSON strings use escaped forward slashes: https:\/\/scontent-...
+    - Thumbnails have size params like s150x150 or p100x100 in the URL
 
-    Returns a deduplicated list of unique high-resolution fbcdn image URLs.
+    Returns a deduplicated list of unique high-resolution photo URLs.
     """
     seen: set = set()
     images: list = []
 
-    # Facebook encodes image URIs in JSON in multiple formats.
-    # Pattern logic: find any "uri" followed by an fbcdn URL that looks like a photo
-    uri_patterns = [
-        # Standard: "uri":"https://scontent...fbcdn.net/...jpg..."
-        r'"uri"\s*:\s*"(https://[^"]+\.fbcdn\.net/[^"]+\.(?:jpg|png|webp)[^"]*)"',
-        # Sometimes the key is "src"
-        r'"src"\s*:\s*"(https://[^"]+\.fbcdn\.net/[^"]+\.(?:jpg|png|webp)[^"]*)"',
-        # Image objects with dimensions
-        r'"image"\s*:\s*\{"uri"\s*:\s*"(https://[^"]+\.fbcdn\.net/[^"]+\.(?:jpg|png|webp)[^"]*)"',
-        # Thumbnail/large_image wrappers
-        r'"large_image"\s*:\s*\{"uri"\s*:\s*"(https://[^"]+\.fbcdn\.net/[^"]+\.(?:jpg|png|webp)[^"]*)"',
-        r'"full"\s*:\s*\{"uri"\s*:\s*"(https://[^"]+\.fbcdn\.net/[^"]+\.(?:jpg|png|webp)[^"]*)"',
-    ]
+    # We do a broad search: find every occurrence of scontent-* or scontent.* in the HTML
+    # These are photo CDN URLs, distinct from static.xx.fbcdn.net which is UI/icons
+    # Pattern handles both escaped (JSON) and unescaped (HTML attrs) forms
+    broad_pattern = re.compile(
+        r'https?:\\?/\\?/scontent[^"\'<>\s]+'
+        r'\.(?:jpg|jpeg|png|webp)'
+        r'[^"\'<>\s]*',
+        re.IGNORECASE
+    )
 
-    for pat in uri_patterns:
-        for m in re.finditer(pat, html):
-            raw_url = m.group(1)
-            # Unescape JSON-encoded backslashes (e.g. \u0026 -> &, \/ -> /)
-            url = raw_url.replace("\\/", "/")
-            try:
-                url = _html.unescape(url)
-            except Exception:
-                pass
+    for m in broad_pattern.finditer(html):
+        raw_url = m.group(0)
 
-            # Skip profile / avatar images (they are very small and in /safe_image/ paths)
-            skip_keywords = ["/safe_image/", "/profile", "/cp/", "emoji", "icon", "sticker", "logo"]
-            if any(kw in url for kw in skip_keywords):
-                continue
+        # Unescape JSON-encoded slashes: https:\/\/ -> https://
+        url = raw_url.replace("\\/", "/")
 
-            # Skip very small thumbnails that appear in "thumbnail" fields
-            # These typically have small dimensions encoded in the URL path (s40x40, p40x40, etc.)
-            if re.search(r'[sp]\d{2}x\d{2}', url):
-                continue
+        # Unescape HTML entities: &amp; -> &
+        try:
+            url = _html.unescape(url)
+        except Exception:
+            pass
 
-            if url not in seen:
-                seen.add(url)
-                images.append(url)
+        # Skip tiny thumbnail sizes encoded in URL path params
+        # Facebook uses patterns like s150x150, p100x100, s75x75 for thumbnails
+        if re.search(r'[sp]\d{2,3}x\d{2,3}', url):
+            continue
+
+        # Skip profile images
+        skip_keywords = ["/safe_image/", "/cp/", "profile_pic", "emoji", "sticker"]
+        if any(kw in url for kw in skip_keywords):
+            continue
+
+        # Normalize: strip trailing punctuation that might bleed in from HTML context
+        url = url.rstrip('.,;)')
+
+        if url not in seen:
+            seen.add(url)
+            images.append(url)
 
     return images
 

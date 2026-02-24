@@ -519,14 +519,14 @@ class FacebookPostScraper(FacebookBaseScraper):
                     "layer6_image_urls": html_images[:20] if 'html_images' in dir() else [],
                 }
 
-                # Include a 3000-char HTML snippet containing the first fbcdn URI found
-                # so you can examine the surrounding JSON structure
+                # Include a snippet around the first scontent photo CDN URL
+                # (scontent-*.fbcdn.net = photos; static.xx.fbcdn.net = icons/UI - skip those)
                 if page_html:
-                    m_idx = page_html.find("fbcdn.net")
+                    m_idx = page_html.find("scontent")
                     if m_idx >= 0:
                         snip_start = max(0, m_idx - 200)
                         snip_end = min(len(page_html), m_idx + 2800)
-                        debug_info["html_fbcdn_snippet"] = page_html[snip_start:snip_end]
+                        debug_info["html_scontent_snippet"] = page_html[snip_start:snip_end]
 
                 scraped_data["_debug"] = debug_info
             except Exception as de:
