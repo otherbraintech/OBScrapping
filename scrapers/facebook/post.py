@@ -11,6 +11,7 @@ from .utils import (
     _extract_shares_count_from_text,
     _extract_views_count_from_text,
     _extract_reactions_count_from_html,
+    _extract_engagement_from_html,
     _normalize_count,
 )
 
@@ -346,14 +347,24 @@ class FacebookPostScraper(FacebookBaseScraper):
             except Exception as e:
                 self.logger.warning(f"Page text fallback error: {e}")
 
-            # ---- LAYER 5: HTML EMBEDDED PATTERNS ----
-            if page_html and not scraped_data.get("reactions"):
+            # ---- LAYER 5: GraphQL JSON EMBEDDED IN HTML ----
+            # Facebook always embeds engagement data in inline <script> JSON,
+            # even for anonymous users. This is the most reliable fallback.
+            if page_html:
                 try:
-                    embedded = _extract_reactions_count_from_html(page_html)
+                    embedded = _extract_engagement_from_html(page_html)
+                    if embedded.get("reactions") and not scraped_data.get("reactions"):
+                        scraped_data["reactions"] = str(embedded["reactions"])
+                    if embedded.get("comments") and not scraped_data.get("comments"):
+                        scraped_data["comments"] = str(embedded["comments"])
+                    if embedded.get("shares") and not scraped_data.get("shares"):
+                        scraped_data["shares"] = str(embedded["shares"])
+                    if embedded.get("views") and not scraped_data.get("views"):
+                        scraped_data["views"] = str(embedded["views"])
                     if embedded:
-                        scraped_data["reactions"] = embedded
-                except Exception:
-                    pass
+                        self.logger.info(f"GraphQL HTML extraction found: {embedded}")
+                except Exception as e:
+                    self.logger.warning(f"GraphQL HTML extraction error: {e}")
 
             # ---- NORMALIZE COUNTS ----
             for field in ["reactions", "comments", "shares", "views"]:

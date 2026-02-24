@@ -94,7 +94,54 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
     except Exception:
         return None
 
+def _extract_engagement_from_html(html: str) -> dict:
+    """
+    Extracts engagement counts from Facebook's inline GraphQL JSON blobs.
+    Facebook embeds data in <script> tags even for anonymous users.
+    Returns a dict with any found counts: reactions, comments, shares, views.
+    """
+    result = {}
+
+    # Patterns for JSON-embedded counts (from Facebook's GraphQL response JSONs)
+    patterns = {
+        "reactions": [
+            r'"reaction_count"\s*:\s*\{"count"\s*:\s*(\d+)',
+            r'"reaction_count"\s*:\s*(\d+)',
+            r'"reactions"\s*:\s*\{"count"\s*:\s*(\d+)',
+            r'"total_count"\s*:\s*(\d+).*?"reaction',
+        ],
+        "comments": [
+            r'"comment_count"\s*:\s*(\d+)',
+            r'"comments"\s*:\s*\{"total_count"\s*:\s*(\d+)',
+            r'"comment_rendering_instance_count"\s*:\s*(\d+)',
+        ],
+        "shares": [
+            r'"share_count"\s*:\s*\{"count"\s*:\s*(\d+)',
+            r'"share_count"\s*:\s*(\d+)',
+            r'"reshare_count"\s*:\s*(\d+)',
+        ],
+        "views": [
+            r'"play_count"\s*:\s*(\d+)',
+            r'"video_view_count"\s*:\s*(\d+)',
+            r'"view_count"\s*:\s*(\d+)',
+        ],
+    }
+
+    for field, pats in patterns.items():
+        for pat in pats:
+            m = re.search(pat, html)
+            if m:
+                try:
+                    result[field] = int(m.group(1))
+                    break
+                except (ValueError, IndexError):
+                    continue
+
+    return result
+
+
 def _extract_reactions_count_from_html(html: str) -> Optional[str]:
-    # Placeholder for the complex HTML/regex parsing
-    m = re.search(r'([\d,.]+)\s*(?:reacciones|reactions)', html, re.IGNORECASE)
-    return m.group(1) if m else None
+    """Legacy wrapper — extracts just reaction count from HTML."""
+    data = _extract_engagement_from_html(html)
+    val = data.get("reactions")
+    return str(val) if val else None
