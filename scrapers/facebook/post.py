@@ -12,6 +12,7 @@ from .utils import (
     _extract_views_count_from_text,
     _extract_reactions_count_from_html,
     _extract_engagement_from_html,
+    _extract_images_from_html,
     _normalize_count,
 )
 
@@ -451,9 +452,7 @@ class FacebookPostScraper(FacebookBaseScraper):
             except Exception as e:
                 self.logger.warning(f"Page text fallback error: {e}")
 
-            # ---- LAYER 5: GraphQL JSON EMBEDDED IN HTML ----
-            # Facebook always embeds engagement data in inline <script> JSON,
-            # even for anonymous users. This is the most reliable fallback.
+            # ---- LAYER 5: GraphQL JSON EMBEDDED IN HTML (Engagement) ----
             if page_html:
                 try:
                     embedded = _extract_engagement_from_html(page_html)
@@ -469,6 +468,37 @@ class FacebookPostScraper(FacebookBaseScraper):
                         self.logger.info(f"GraphQL HTML extraction found: {embedded}")
                 except Exception as e:
                     self.logger.warning(f"GraphQL HTML extraction error: {e}")
+
+            # ---- LAYER 6: GraphQL JSON IMAGE EXTRACTION ----
+            # Facebook embeds ALL gallery image URIs in inline script JSON.
+            # This works reliably even without cookies / login, unlike the DOM.
+            if page_html:
+                try:
+                    html_images = _extract_images_from_html(page_html)
+                    self.logger.info(f"GraphQL image extraction found {len(html_images)} images")
+
+                    if html_images:
+                        # Merge with any DOM-found images: prefer the HTML set if larger
+                        dom_images = scraped_data.get("images", [])
+                        # Use HTML-extracted if it provides more (it should for galleries)
+                        if len(html_images) >= len(dom_images):
+                            scraped_data["images"] = html_images
+                            scraped_data["image_count"] = len(html_images)
+                            self.logger.info(f"Using GraphQL images ({len(html_images)}) over DOM images ({len(dom_images)})")
+
+                        # Re-evaluate post_type with the richer image set
+                        new_count = scraped_data.get("image_count", 0)
+                        has_video = scraped_data.get("video_src") or scraped_data.get("og_video")
+                        if has_video:
+                            scraped_data["post_type"] = "video"
+                        elif new_count > 1:
+                            scraped_data["post_type"] = "multi_image"
+                        elif new_count == 1:
+                            scraped_data["post_type"] = "single_image"
+                        # else keep whatever was set before
+
+                except Exception as e:
+                    self.logger.warning(f"GraphQL image extraction error: {e}")
 
             # ---- NORMALIZE COUNTS ----
             for field in ["reactions", "comments", "shares", "views"]:
