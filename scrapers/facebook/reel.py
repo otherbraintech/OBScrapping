@@ -134,16 +134,41 @@ class FacebookReelScraper(FacebookBaseScraper):
             if og_description:
                 scraped_data["caption"] = og_description
 
-            # Username
-            if og_title and not scraped_data.get("username"):
-                scraped_data["username"] = og_title
-
-            if page_title and " - " in page_title:
+            # Username — try multiple formats:
+            # 1. page_title: "Caption - Page Name"
+            # 2. og_title video format: "N réactions · N partages | Caption | Page Name"
+            # 3. og_title plain format: "Page Name"
+            if page_title and page_title != "Facebook" and " - " in page_title:
                 parts = page_title.rsplit(" - ", 1)
                 if len(parts) == 2:
                     scraped_data["username"] = parts[1].strip()
                     if not scraped_data.get("caption"):
                         scraped_data["caption"] = parts[0].strip()
+            elif og_title:
+                # Video og_title format: "N réactions · N partages | Caption | Page Name"
+                # Or: "Caption | Page Name"
+                if " | " in og_title:
+                    parts = og_title.rsplit(" | ", 1)
+                    scraped_data["username"] = parts[-1].strip()
+                    if not scraped_data.get("caption") and len(parts) > 1:
+                        # middle part (between first and last pipe) is the caption
+                        inner = og_title.split(" | ")
+                        # skip the first segment if it looks like engagement (has réactions/reactions)
+                        start_idx = 1 if any(kw in inner[0].lower() for kw in ["réaction", "reaction", "partage", "share"]) else 0
+                        scraped_data["caption"] = " | ".join(inner[start_idx:-1]).strip() or og_description
+                elif not scraped_data.get("username"):
+                    scraped_data["username"] = og_title
+
+            # ---- VIDEO URL: populate video_url field (best available source) ----
+            # Waterfall: og:video:secure_url > og:video:url > og:video > DOM video.src
+            video_url = (
+                scraped_data.get("og_video_secure_url")
+                or scraped_data.get("og_video_url")
+                or scraped_data.get("og_video")
+                or scraped_data.get("video_src")
+            )
+            if video_url:
+                scraped_data["video_url"] = video_url
 
             # Parse OG title for engagement
             if og_title:
@@ -277,6 +302,29 @@ class FacebookReelScraper(FacebookBaseScraper):
                 except Exception as e:
                     self.logger.warning(f"GraphQL Reels extraction error: {e}")
 
+            # ---- LAYER 5: HTML VIDEO URL SCAN ----
+            # Extract .mp4 video URLs from inline fbcdn JSON (fallback if og:video empty)
+            video_url_found = scraped_data.get("video_url")
+            if not video_url_found and page_html:
+                try:
+                    mp4_pattern = re.compile(
+                        r'https?:\\?/\\?/video[^"\' <>\s]+\.mp4[^"\' <>\s]*',
+                        re.IGNORECASE
+                    )
+                    mp4_urls = []
+                    seen_mp4: set = set()
+                    for mp4m in mp4_pattern.finditer(page_html):
+                        raw_mp4 = mp4m.group(0).replace("\\/", "/").rstrip('.,;)')
+                        if raw_mp4 not in seen_mp4:
+                            seen_mp4.add(raw_mp4)
+                            mp4_urls.append(raw_mp4)
+                    if mp4_urls:
+                        scraped_data["video_url"] = mp4_urls[0]
+                        scraped_data["video_url_all"] = mp4_urls
+                        self.logger.info(f"HTML mp4 scan found {len(mp4_urls)} video URLs")
+                except Exception as e:
+                    self.logger.warning(f"HTML mp4 scan error: {e}")
+
             # ---- NORMALIZE COUNTS ----
             for field in ["reactions", "comments", "shares", "views"]:
                 raw = scraped_data.get(field)
@@ -284,6 +332,23 @@ class FacebookReelScraper(FacebookBaseScraper):
                     normalized = _normalize_count(str(raw))
                     if normalized is not None:
                         scraped_data[f"{field}_count"] = normalized
+
+            # ---- DEBUG BLOCK (always included — remove once stable) ----
+            try:
+                scraped_data["_debug"] = {
+                    "final_url": self.page.url if self.page else url,
+                    "html_length": len(page_html) if page_html else 0,
+                    "video_url_source": (
+                        "og_video_secure_url" if scraped_data.get("og_video_secure_url")
+                        else "og_video_url" if scraped_data.get("og_video_url")
+                        else "og_video" if scraped_data.get("og_video")
+                        else "dom" if scraped_data.get("video_src")
+                        else "mp4_html_scan" if scraped_data.get("video_url")
+                        else "none"
+                    ),
+                }
+            except Exception as de:
+                scraped_data["_debug"] = {"error": str(de)}
 
             # ---- CLEAN OUTPUT ----
             scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
