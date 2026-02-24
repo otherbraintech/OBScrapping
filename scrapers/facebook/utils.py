@@ -178,10 +178,14 @@ def _extract_images_from_html(html: str) -> list:
         except Exception:
             pass
 
-        # Skip tiny thumbnail sizes encoded in URL path params
-        # Facebook uses patterns like s150x150, p100x100, s75x75 for thumbnails
-        if re.search(r'[sp]\d{2,3}x\d{2,3}', url):
-            continue
+        # Skip tiny thumbnail sizes (Facebook encodes sizes like s40x40, p100x100, s75x75)
+        # BUT s600x600 is a real image — only skip if BOTH dimensions are under 200px
+        size_match = re.search(r'[sp](\d+)x(\d+)', url)
+        if size_match:
+            w = int(size_match.group(1))
+            h = int(size_match.group(2))
+            if w < 200 and h < 200:
+                continue
 
         # Skip profile images
         skip_keywords = ["/safe_image/", "/cp/", "profile_pic", "emoji", "sticker"]
