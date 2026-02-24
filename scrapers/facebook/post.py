@@ -200,32 +200,86 @@ class FacebookPostScraper(FacebookBaseScraper):
                     });
                     data.button_texts = buttonTexts;
 
-                    // Video info
+                    // Video detection
                     const video = mainContainer.querySelector('video');
                     if (video) {
+                        data.has_video = true;
                         data.video_src = video.src || null;
                         data.video_poster = video.poster || null;
                         data.video_duration = video.duration || null;
+                    } else {
+                        data.has_video = false;
                     }
 
-                    // ALL post images (album/carousel support)
-                    // Filter: must be fbcdn URLs, not tiny avatars/icons
-                    const seenUrls = new Set();
+                    // ---- ALL IMAGES EXTRACTION ----
+                    // Collect all unique fbcdn images (these are actual post images)
+                    const seenSrcs = new Set();
                     const allImages = [];
-                    mainContainer.querySelectorAll('img[src*="fbcdn"]').forEach(img => {
-                        const src = img.src || '';
-                        // Skip profile pics (p_) and very small UI elements
-                        if (!src || seenUrls.has(src)) return;
-                        if (src.includes('_s.jpg') || src.includes('_t.jpg')) return;
-                        if (src.includes('profile') && src.includes('picture')) return;
-                        // Natural image must be at least 200px on its longest side
-                        const w = img.naturalWidth || img.width || 0;
-                        const h = img.naturalHeight || img.height || 0;
-                        if (w < 200 && h < 200) return;
-                        seenUrls.add(src);
-                        allImages.push(src);
+
+                    // Strategy 1: images inside the post media area
+                    // Facebook wraps multi-image posts in a grid or carousel container
+                    const mediaSelectors = [
+                        'div[data-pagelet="MediaViewerPhoto"] img',
+                        'div[role="img"] img[src*="fbcdn"]',
+                        'a[href*="/photo/"] img[src*="fbcdn"]',
+                        'a[href*="/photos/"] img[src*="fbcdn"]',
+                        'div[class*="photo"] img[src*="fbcdn"]',
+                        'img[src*="fbcdn"][alt]',
+                    ];
+
+                    for (const sel of mediaSelectors) {
+                        mainContainer.querySelectorAll(sel).forEach(img => {
+                            const src = img.src || '';
+                            // Filter out tiny thumbnails (profile pics, icons)
+                            // and only keep images with meaningful dimensions
+                            if (src && src.includes('fbcdn') && !seenSrcs.has(src)) {
+                                const width = img.naturalWidth || img.width || 0;
+                                const height = img.naturalHeight || img.height || 0;
+                                // Only include images that look like post content
+                                if (width > 100 || height > 100 || (width === 0 && height === 0)) {
+                                    seenSrcs.add(src);
+                                    allImages.push({
+                                        src: src,
+                                        alt: img.alt || '',
+                                        width: width,
+                                        height: height,
+                                    });
+                                }
+                            }
+                        });
+                        if (allImages.length > 1) break; // found gallery images, stop
+                    }
+
+                    // Also look for gallery count indicator ("X photos")
+                    const galleryCountEl = mainContainer.querySelector('div[class*="photoCount"], span[class*="photoCount"]');
+                    if (galleryCountEl) {
+                        const countText = galleryCountEl.innerText || '';
+                        const m = countText.match(/(\\d+)/);
+                        if (m) data.gallery_count_indicator = parseInt(m[1]);
+                    }
+
+                    // Strategy 2: count <a> links to /photo/ pages (each = one image in gallery)
+                    const photoLinks = new Set();
+                    mainContainer.querySelectorAll('a[href*="/photo/"]').forEach(a => {
+                        const href = a.getAttribute('href') || '';
+                        if (href && !href.includes('profile')) photoLinks.add(href.split('?')[0]);
                     });
+                    data.photo_link_count = photoLinks.size;
+
                     data.all_images = allImages;
+                    data.image_count = allImages.length;
+
+                    // ---- POST TYPE DETECTION ----
+                    // priority: video > multi-image > single-image > text
+                    if (data.has_video) {
+                        data.post_type = 'video';
+                    } else if (data.photo_link_count > 1 || allImages.length > 1) {
+                        data.post_type = 'multi_image';
+                    } else if (allImages.length === 1 || data.photo_link_count === 1) {
+                        data.post_type = 'single_image';
+                    } else {
+                        data.post_type = 'text';
+                    }
 
                     // Post date from aria-label on time links
                     mainContainer.querySelectorAll('a[role="link"]').forEach(link => {
@@ -257,6 +311,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                     return data;
                 }""")
 
+
                 self.logger.info(
                     f"JS found {len(js_data.get('aria_labels', []))} aria-labels, "
                     f"{len(js_data.get('engagement_texts', []))} engagement texts"
@@ -267,7 +322,6 @@ class FacebookPostScraper(FacebookBaseScraper):
                     if any(kw in label.lower() for kw in ['gusta', 'comenta', 'compartid', 'reacci', 'reaction', 'comment', 'share', 'view', 'personas']):
                         self.logger.info(f"  ARIA-LABEL: {label[:120]}")
 
-                # Override/enrich with DOM-extracted fields
                 if js_data.get("post_date"):
                     scraped_data["post_date"] = js_data["post_date"]
                 if js_data.get("caption"):
@@ -280,22 +334,22 @@ class FacebookPostScraper(FacebookBaseScraper):
                 if js_data.get("video_duration"):
                     scraped_data["video_duration_seconds"] = js_data["video_duration"]
 
-                # Merge all images: og_image first + additional album images
-                all_images_set = []
-                og_img = scraped_data.get("og_image")
-                if og_img:
-                    all_images_set.append(og_img)
-                for img_url in js_data.get("all_images", []):
-                    if img_url not in all_images_set:
-                        all_images_set.append(img_url)
+                # Post type (single_image / multi_image / video / text)
+                if js_data.get("post_type"):
+                    scraped_data["post_type"] = js_data["post_type"]
 
-                if len(all_images_set) > 1:
-                    scraped_data["images"] = all_images_set
-                    scraped_data["image_count"] = len(all_images_set)
-                    self.logger.info(f"Found {len(all_images_set)} images in post")
-                elif og_img:
-                    scraped_data["images"] = [og_img]
+                # All images — list of {src, alt, width, height}
+                all_images = js_data.get("all_images", [])
+                if all_images:
+                    scraped_data["images"] = [img["src"] for img in all_images]
+                    scraped_data["image_count"] = len(all_images)
+                elif scraped_data.get("og_image"):
+                    # Fall back to og:image as the only image
+                    scraped_data["images"] = [scraped_data["og_image"]]
                     scraped_data["image_count"] = 1
+
+                # Diagnostic: photo link count (how many /photo/ anchors in DOM)
+                scraped_data["photo_link_count"] = js_data.get("photo_link_count", 0)
 
 
                 # Parse aria-labels for engagement
