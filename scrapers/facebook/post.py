@@ -334,10 +334,6 @@ class FacebookPostScraper(FacebookBaseScraper):
                 if js_data.get("video_duration"):
                     scraped_data["video_duration_seconds"] = js_data["video_duration"]
 
-                # Post type (single_image / multi_image / video / text)
-                if js_data.get("post_type"):
-                    scraped_data["post_type"] = js_data["post_type"]
-
                 # All images — list of {src, alt, width, height}
                 all_images = js_data.get("all_images", [])
                 if all_images:
@@ -347,6 +343,23 @@ class FacebookPostScraper(FacebookBaseScraper):
                     # Fall back to og:image as the only image
                     scraped_data["images"] = [scraped_data["og_image"]]
                     scraped_data["image_count"] = 1
+
+                # Final Post Type Consolidation
+                # Priority: JS detected type > OG type hint > Image count logic
+                js_type = js_data.get("post_type")
+                og_type = scraped_data.get("og_type", "").lower()
+                has_video_hint = "video" in og_type or "reel" in og_type or scraped_data.get("video_src")
+                
+                if has_video_hint:
+                    scraped_data["post_type"] = "video"
+                elif js_type and js_type != "text":
+                    scraped_data["post_type"] = js_type
+                elif scraped_data.get("image_count", 0) > 1:
+                    scraped_data["post_type"] = "multi_image"
+                elif scraped_data.get("image_count", 0) == 1:
+                    scraped_data["post_type"] = "single_image"
+                else:
+                    scraped_data["post_type"] = js_type or "text"
 
                 # Diagnostic: photo link count (how many /photo/ anchors in DOM)
                 scraped_data["photo_link_count"] = js_data.get("photo_link_count", 0)
