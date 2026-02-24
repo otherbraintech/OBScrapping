@@ -397,6 +397,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         else "mp4_html_scan" if scraped_data.get("video_url")
                         else "none"
                     ),
+                    "page_html": page_html if page_html else "",
                 }
             except Exception as de:
                 scraped_data["_debug"] = {"error": str(de)}
