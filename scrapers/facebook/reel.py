@@ -352,15 +352,20 @@ class FacebookReelScraper(FacebookBaseScraper):
                             seen_mp4.add(url)
                             all_mp4.append(url)
 
-                    # Filter to target video_id if we know it
-                    if target_video_id and all_mp4:
+                    # Filter by folder: m367 = current reel, m366 = related/recommended videos
+                    # Facebook organizes DASH segments this way: m367 is always the page's primary video
+                    m367_urls = [u for u in all_mp4 if '/m367/' in u]
+                    if m367_urls:
+                        all_mp4 = m367_urls
+                        self.logger.info(f"Filtered to {len(m367_urls)} m367 URLs (current reel)")
+                    elif target_video_id:
+                        # Fallback: try matching by video_id in URL
                         filtered = [u for u in all_mp4 if target_video_id in u]
                         if filtered:
                             all_mp4 = filtered
 
                     if all_mp4:
-                        # Prefer progressive/tagged URLs (best for direct download)
-                        # Priority order: 1080p → 720p → 540p → any
+                        # Sort by quality: prefer highest resolution available
                         def quality_score(u: str) -> int:
                             if "1080" in u: return 4
                             if "720" in u: return 3
@@ -371,7 +376,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         all_mp4.sort(key=quality_score, reverse=True)
                         scraped_data["video_url"] = all_mp4[0]
                         scraped_data["video_url_all"] = all_mp4[:5]  # max 5 versions
-                        self.logger.info(f"HTML mp4 scan: {len(all_mp4)} URLs for video_id={target_video_id}")
+                        self.logger.info(f"Best video_url: {all_mp4[0][:80]}...")
 
                 except Exception as e:
                     self.logger.warning(f"HTML mp4 scan error: {e}")
@@ -386,7 +391,7 @@ class FacebookReelScraper(FacebookBaseScraper):
 
             # ---- DEBUG BLOCK (always included — remove once stable) ----
             try:
-                scraped_data["_debug"] = {
+                debug_info: dict = {
                     "final_url": self.page.url if self.page else url,
                     "html_length": len(page_html) if page_html else 0,
                     "video_url_source": (
@@ -397,8 +402,11 @@ class FacebookReelScraper(FacebookBaseScraper):
                         else "mp4_html_scan" if scraped_data.get("video_url")
                         else "none"
                     ),
-                    "page_html": page_html if page_html else "",
                 }
+                # Include first 50KB of HTML for manual inspection
+                if page_html:
+                    debug_info["html_raw"] = page_html[:50000]
+                scraped_data["_debug"] = debug_info
             except Exception as de:
                 scraped_data["_debug"] = {"error": str(de)}
 
