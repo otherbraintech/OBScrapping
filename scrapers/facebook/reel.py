@@ -14,6 +14,7 @@ from .utils import (
     _extract_views_count_from_text,
     _extract_reactions_count_from_html,
     _extract_engagement_from_html,
+    _extract_engagement_from_visible_text,
     _normalize_count,
 )
 
@@ -284,6 +285,28 @@ class FacebookReelScraper(FacebookBaseScraper):
                     scraped_data["images"] = [scraped_data["og_image"]]
                     scraped_data["image_count"] = 1
 
+                # ---- Extract engagement from aria_labels and engagement_texts ----
+                all_texts = (js_data.get("aria_labels") or []) + (js_data.get("engagement_texts") or [])
+                for text in all_texts:
+                    if not scraped_data.get("comments"):
+                        c = _extract_comments_count_from_text(text)
+                        if c:
+                            scraped_data["comments"] = c
+                            self.logger.info(f"Comments from DOM text: {c}")
+                    if not scraped_data.get("views"):
+                        v = _extract_views_count_from_text(text)
+                        if v:
+                            scraped_data["views"] = v
+                            self.logger.info(f"Views from DOM text: {v}")
+                    if not scraped_data.get("reactions"):
+                        r = _extract_reactions_count_from_text(text)
+                        if r:
+                            scraped_data["reactions"] = r
+                    if not scraped_data.get("shares"):
+                        s = _extract_shares_count_from_text(text)
+                        if s:
+                            scraped_data["shares"] = s
+
             except Exception as e:
                 self.logger.warning(f"JS extraction error in Reels: {e}")
 
@@ -303,6 +326,19 @@ class FacebookReelScraper(FacebookBaseScraper):
                         self.logger.info(f"GraphQL Reels extraction found: {embedded}")
                 except Exception as e:
                     self.logger.warning(f"GraphQL Reels extraction error: {e}")
+
+            # ---- LAYER 4b: VISIBLE TEXT PATTERNS IN HTML ----
+            if page_html and (not scraped_data.get("comments") or not scraped_data.get("views")):
+                try:
+                    visible = _extract_engagement_from_visible_text(page_html)
+                    if visible.get("comments") and not scraped_data.get("comments"):
+                        scraped_data["comments"] = visible["comments"]
+                        self.logger.info(f"Comments from visible HTML text: {visible['comments']}")
+                    if visible.get("views") and not scraped_data.get("views"):
+                        scraped_data["views"] = visible["views"]
+                        self.logger.info(f"Views from visible HTML text: {visible['views']}")
+                except Exception as e:
+                    self.logger.warning(f"Visible text extraction error: {e}")
 
             # ---- LAYER 5: HTML VIDEO URL SCAN ----
             # Extract .mp4 video URLs — clean HTML entities, filter to target video only
@@ -437,9 +473,6 @@ class FacebookReelScraper(FacebookBaseScraper):
                         else "none"
                     ),
                 }
-                # Include first 50KB of HTML for manual inspection
-                if page_html:
-                    debug_info["html_raw"] = page_html[:50000]
                 scraped_data["_debug"] = debug_info
             except Exception as de:
                 scraped_data["_debug"] = {"error": str(de)}

@@ -111,21 +111,33 @@ def _extract_engagement_from_html(html: str) -> dict:
             r'"reaction_count"\s*:\s*(\d+)',
             r'"reactions"\s*:\s*\{"count"\s*:\s*(\d+)',
             r'"total_count"\s*:\s*(\d+).*?"reaction',
+            r'"i18n_reaction_count"\s*:\s*"(\d+)',
         ],
         "comments": [
+            r'"comment_count"\s*:\s*\{"total_count"\s*:\s*(\d+)',
             r'"comment_count"\s*:\s*(\d+)',
             r'"comments"\s*:\s*\{"total_count"\s*:\s*(\d+)',
             r'"comment_rendering_instance_count"\s*:\s*(\d+)',
+            r'"total_comment_count"\s*:\s*(\d+)',
+            r'"comment_count_reduced"\s*:\s*"(\d+)',
+            r'"i18n_comment_count"\s*:\s*"(\d+)',
+            r'"comments_count"\s*:\s*(\d+)',
+            r'"commentCount"\s*:\s*(\d+)',
         ],
         "shares": [
             r'"share_count"\s*:\s*\{"count"\s*:\s*(\d+)',
             r'"share_count"\s*:\s*(\d+)',
             r'"reshare_count"\s*:\s*(\d+)',
+            r'"i18n_share_count"\s*:\s*"(\d+)',
         ],
         "views": [
             r'"play_count"\s*:\s*(\d+)',
             r'"video_view_count"\s*:\s*(\d+)',
             r'"view_count"\s*:\s*(\d+)',
+            r'"video_view_count_renderer"\s*:\s*\{"text"\s*:\s*\{"text"\s*:\s*"([\d.,]+)',
+            r'"seen_by_count"\s*:\s*\{"count"\s*:\s*(\d+)',
+            r'"video_play_count"\s*:\s*(\d+)',
+            r'"i18n_video_view_count"\s*:\s*"([\d.,]+)',
         ],
     }
 
@@ -134,10 +146,47 @@ def _extract_engagement_from_html(html: str) -> dict:
             m = re.search(pat, html)
             if m:
                 try:
-                    result[field] = int(m.group(1))
+                    val_str = m.group(1).replace(",", "").replace(".", "")
+                    result[field] = int(val_str)
                     break
                 except (ValueError, IndexError):
                     continue
+
+    return result
+
+
+def _extract_engagement_from_visible_text(html: str) -> dict:
+    """
+    Searches the raw HTML for visible-text engagement patterns.
+    Facebook sometimes renders engagement counts as visible text outside JSON
+    in formats like '48 commentaires', '1,2K vues', etc.
+    """
+    result = {}
+
+    # Look for comment count text patterns in raw HTML (visible text)
+    comment_patterns = [
+        r'>([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)<',
+        r'>([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)</span>',
+        r'aria-label="([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)"',
+        r'"text"\s*:\s*"([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)"',
+    ]
+    for pat in comment_patterns:
+        m = re.search(pat, html, re.IGNORECASE)
+        if m:
+            result["comments"] = m.group(1)
+            break
+
+    # Look for views/plays count text patterns
+    views_patterns = [
+        r'>([\d.,]+[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)<',
+        r'aria-label="([\d.,]+[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?)"',
+        r'"text"\s*:\s*"([\d.,]+[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)"',
+    ]
+    for pat in views_patterns:
+        m = re.search(pat, html, re.IGNORECASE)
+        if m:
+            result["views"] = m.group(1)
+            break
 
     return result
 
