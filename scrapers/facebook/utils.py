@@ -6,8 +6,9 @@ def _extract_shares_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:shares?|compartido|veces compartido)",
+        r"([\d.,]+[KMkm]?)\s*(?:shares?|compartido|veces compartido|partages?|condivisioni|compartilhamentos)",
         r"([\d.,]+)\s*veces\s*compartido",
+        r"([\d.,]+)\s*fois\s*partagé",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -20,8 +21,8 @@ def _extract_reactions_count_from_text(text: str) -> Optional[str]:
         return None
     patterns = [
         r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
-        r"(?:Todas las reacciones|Total reactions|Reacciones):\s*([\d.,]+[KMkm]?)",
-        r"([\d.,]+[KMkm]?)\s*(?:reactions?|reaccione?s|personas reaccionaron)",
+        r"(?:Todas las reacciones|Total reactions|Reacciones|Toutes les réactions):\s*([\d.,]+[KMkm]?)",
+        r"([\d.,]+[KMkm]?)\s*(?:reactions?|reaccione?s|réactions?|reações|reazioni|personas reaccionaron)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -35,7 +36,7 @@ def _extract_comments_count_from_text(text: str) -> Optional[str]:
     patterns = [
         r"view\s+all\s+([\d.,]+)\s*comments?",
         r"ver\s+los\s+([\d.,]+)\s*comentarios",
-        r"([\d.,]+)\s*(?:comments?|comentarios)",
+        r"([\d.,]+)\s*(?:comments?|comentarios|commentaires?|commenti|comentários)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -47,9 +48,10 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas)",
+        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações)",
         r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas)",
         r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas)",
+        r"([\d.,]+)\s*mille\s*(?:vues?)",
         r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
         r"([\d.,]+)\s*million\s*(?:views?|plays?)",
     ]
