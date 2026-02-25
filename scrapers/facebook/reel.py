@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import re
 import html as _html
 from datetime import datetime
@@ -368,18 +370,47 @@ class FacebookReelScraper(FacebookBaseScraper):
                             all_mp4 = filtered
 
                     if all_mp4:
-                        # Sort by quality: prefer highest resolution available
+                        # Sort by quality: decode efg base64 or check tag= param
                         def quality_score(u: str) -> int:
-                            if "1080" in u: return 4
-                            if "720" in u: return 3
-                            if "540" in u: return 2
-                            if "360" in u: return 1
+                            """Extract resolution from URL. DASH URLs encode it
+                            in base64 efg param; progressive URLs have tag= param."""
+                            tag_str = ""
+                            # Try tag= query parameter (progressive URLs)
+                            tag_match = re.search(r'[&?]tag=([^&]+)', u)
+                            if tag_match:
+                                tag_str = tag_match.group(1)
+
+                            # Try decoding base64 efg= parameter (DASH URLs)
+                            efg_match = re.search(r'[&?]efg=([A-Za-z0-9_+/=%-]+)', u)
+                            if efg_match:
+                                try:
+                                    import urllib.parse
+                                    raw_efg = urllib.parse.unquote(efg_match.group(1))
+                                    # Add padding if needed
+                                    padded = raw_efg + '=' * (4 - len(raw_efg) % 4)
+                                    decoded = base64.b64decode(padded).decode('utf-8', errors='ignore')
+                                    efg_data = json.loads(decoded)
+                                    tag_str = efg_data.get("vencode_tag", "") or efg_data.get("encode_tag", "")
+                                except Exception:
+                                    pass
+
+                            # Extract resolution number from tag string
+                            # e.g. "dash_vp9-basic-gen2_1080p" → 1080
+                            res_match = re.search(r'(\d{3,4})p', tag_str)
+                            if res_match:
+                                return int(res_match.group(1))
+
+                            # Fallback: check bitrate= parameter
+                            br_match = re.search(r'[&?]bitrate=(\d+)', u)
+                            if br_match:
+                                return int(br_match.group(1)) // 10000  # normalize
+
                             return 0
 
                         all_mp4.sort(key=quality_score, reverse=True)
                         scraped_data["video_url"] = all_mp4[0]
                         scraped_data["video_url_all"] = all_mp4[:5]  # max 5 versions
-                        self.logger.info(f"Best video_url: {all_mp4[0][:80]}...")
+                        self.logger.info(f"Best video_url (score={quality_score(all_mp4[0])}): {all_mp4[0][:80]}...")
 
                 except Exception as e:
                     self.logger.warning(f"HTML mp4 scan error: {e}")
