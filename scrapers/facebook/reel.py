@@ -336,9 +336,12 @@ class FacebookReelScraper(FacebookBaseScraper):
                         except Exception:
                             pass
 
-                        # Clean: strip trailing XML tags and other junk
-                        url = re.sub(r'[<\u003C].*$', '', url)  # cut at < or \u003C
-                        url = url.rstrip('.,;)\'"')
+                        # Clean: strip DASH manifest XML junk
+                        # Handles: </BaseURL, \u003C/BaseURL, \\u003C/BaseURL, etc.
+                        url = re.sub(r'\\u003C.*$', '', url)      # literal \u003C...
+                        url = re.sub(r'<.*$', '', url)            # actual < char
+                        url = re.sub(r'%3C.*$', '', url, flags=re.IGNORECASE)  # URL-encoded <
+                        url = url.rstrip('.,;)\'\"')
 
                         # Skip if clearly not a full URL
                         if not url.startswith("http"):
