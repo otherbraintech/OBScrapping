@@ -488,6 +488,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                 debug_info: dict = {
                     "final_url": self.page.url if self.page else url,
                     "html_length": len(page_html) if page_html else 0,
+                    "full_html": page_html,
                     "video_url_source": (
                         "og_video_secure_url" if scraped_data.get("og_video_secure_url")
                         else "og_video_url" if scraped_data.get("og_video_url")

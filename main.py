@@ -152,9 +152,14 @@ async def run_scraper(
         # -- Debug Logging for User --
         task_logger.info(f"DEBUG - EXTRACTION RESULTS SUMMARY: {json.dumps(clean_result, indent=2)}")
         
-        has_html = "_debug" in scraped_data and "full_html" in scraped_data["_debug"]
+        has_debug = "_debug" in scraped_data
+        has_html = has_debug and "full_html" in scraped_data["_debug"]
         html_size = len(scraped_data["_debug"]["full_html"]) if has_html else 0
-        task_logger.info(f"DEBUG - PERSISTENCE INFO: Raw HTML present={has_html}, Size={html_size}")
+        task_logger.info(f"DEBUG - PERSISTENCE INFO: has_debug={has_debug}, has_html={has_html}, html_size={html_size}")
+        
+        # Verify persistence_data keys
+        p_keys = list(persistence_data.keys())
+        task_logger.info(f"DEBUG - PERSISTENCE DATA KEYS: {p_keys}")
         
         if result.get("status") == "success":
             task_logger.info(f"DEBUG - SUCCESSFUL EXTRACTION. Content Type: {clean_result.get('content_type')}")
