@@ -499,6 +499,14 @@ class FacebookReelScraper(FacebookBaseScraper):
                         if matches:
                             scan_results[label] = matches[:3]  # max 3 matches per pattern
                     debug_info["html_engagement_scan"] = scan_results if scan_results else "no_matches"
+                
+                # Focused HTML snippet for troubleshooting
+                if page_html:
+                    # Find a relevant part of the DOM
+                    marker = page_html.find('role="main"')
+                    if marker == -1: marker = page_html.find('role="article"')
+                    if marker == -1: marker = 0
+                    debug_info["html_snippet"] = page_html[marker : marker + 5000]
 
                 scraped_data["_debug"] = debug_info
             except Exception as de:
