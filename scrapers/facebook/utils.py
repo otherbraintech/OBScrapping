@@ -6,9 +6,9 @@ def _extract_shares_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:shares?|compartido|veces compartido|partages?|condivisioni|compartilhamentos)",
+        r"([\d.,]+\s*[KMkm]?)\s*(?:shares?|compartido|veces compartido|partages?|condivisioni|compartilhamentos)",
         r"([\d.,]+)\s*veces\s*compartido",
-        r"([\d.,]+)\s*fois\s*partagé",
+        r"([\d.,]+\s*[KMkm]?)\s*fois\s*partagé",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -20,9 +20,9 @@ def _extract_reactions_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
-        r"(?:Todas las reacciones|Total reactions|Reacciones|Toutes les réactions):\s*([\d.,]+[KMkm]?)",
-        r"([\d.,]+[KMkm]?)\s*(?:reactions?|reaccione?s|réactions?|reações|reazioni|personas reaccionaron)",
+        r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+\s*[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
+        r"(?:Todas las reacciones|Total reactions|Reacciones|Toutes les réactions):\s*([\d.,]+\s*[KMkm]?)",
+        r"([\d.,]+\s*[KMkm]?)\s*(?:reactions?|reaccione?s|réactions?|reações|reazioni|personas reaccionaron)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -48,15 +48,15 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
-        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+[KMkm]?)",
-        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
-        r"([\d.,]+)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
-        r"([\d.,]+)\s*mille\s*(?:vues?)",
-        r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
-        r"([\d.,]+)\s*million\s*(?:views?|plays?)",
-        r"([\d.,]+)\s*vistos?",
-        r"(?:再生回数|reproductions|reproduce|vues)\s*:\s*([\d.,]+[KMkm]?)",
+        r"([\d.,]+\s*[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+\s*[KMkm]?)",
+        r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d.,]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d.,]+\s*[KMkm]?)\s*mille\s*(?:vues?)",
+        r"([\d.,]+\s*[KMkm]?)\s*thousand\s*(?:views?|plays?)",
+        r"([\d.,]+\s*[KMkm]?)\s*million\s*(?:views?|plays?)",
+        r"([\d.,]+\s*[KMkm]?)\s*vistos?",
+        r"(?:再生回数|reproductions|reproduce|vues)\s*:\s*([\d.,]+\s*[KMkm]?)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -79,7 +79,7 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
         elif any(kw in t_low for kw in ["tú, ", "usted, ", "you, "]):
             added_count = 2
 
-    s = s.replace(" ", "").lower()
+    s = re.sub(r"\s+", "", s).lower()
     
     # Handle suffixes K, M
     mult = 1
@@ -149,10 +149,10 @@ def _extract_engagement_from_html(html: str) -> dict:
             r'"play_count"\s*:\s*(\d+)',
             r'"video_view_count"\s*:\s*(\d+)',
             r'"view_count"\s*:\s*(\d+)',
-            r'"video_view_count_renderer"\s*:\s*\{"text"\s*:\s*\{"text"\s*:\s*"([\d.,]+)',
+            r'"video_view_count_renderer"\s*:\s*\{"text"\s*:\s*\{"text"\s*:\s*"([\d.,\s]*[KMkm]?)',
             r'"seen_by_count"\s*:\s*\{"count"\s*:\s*(\d+)',
             r'"video_play_count"\s*:\s*(\d+)',
-            r'"i18n_video_view_count"\s*:\s*"([\d.,]+)',
+            r'"i18n_video_view_count"\s*:\s*"([\d.,\s]*[KMkm]?)',
         ],
     }
 
@@ -181,12 +181,11 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
     """
     result = {}
 
-    # Look for comment count text patterns in raw HTML (visible text)
     comment_patterns = [
-        r'>([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)<',
-        r'>([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)</span>',
-        r'aria-label="([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)"',
-        r'"text"\s*:\s*"([\d.,]+[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)"',
+        r'>([\d.,\s]*[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)<',
+        r'>([\d.,\s]*[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)</span>',
+        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)"',
+        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:comments?|comentarios?|commentaires?|commenti|comentários)"',
     ]
     for pat in comment_patterns:
         m = re.search(pat, html, re.IGNORECASE)
@@ -196,9 +195,9 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
 
     # Look for views/plays count text patterns
     views_patterns = [
-        r'>([\d.,]+[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)<',
-        r'aria-label="([\d.,]+[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?)"',
-        r'"text"\s*:\s*"([\d.,]+[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)"',
+        r'>([\d.,\s]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)<',
+        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?)"',
+        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)"',
     ]
     for pat in views_patterns:
         m = re.search(pat, html, re.IGNORECASE)

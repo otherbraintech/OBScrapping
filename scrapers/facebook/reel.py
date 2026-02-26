@@ -217,7 +217,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     
                     // Comprehensive View Count search
                     const fullText = document.body.innerText;
-                    const viewMatches = fullText.match(/(\d[\d.,]*[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    const viewMatches = fullText.match(/(\d[\d.,\s]*[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
                     if (viewMatches) {
                         data.view_candidates = viewMatches;
                     }
@@ -513,8 +513,8 @@ class FacebookReelScraper(FacebookBaseScraper):
                         "reaction_count": r'"reaction_count"\s*:\s*\{"count"\s*:\s*(\d+)',
                         "total_reaction_count": r'"total_reaction_count"\s*:\s*(\d+)',
                         "feedback_count": r'"feedback"\s*:\s*\{[^}]{0,200}',
-                        "commentaire_visible": r'(\d[\d.,]*[KMkm]?)\s*(?:commentaires?|comments?)',
-                        "vue_visible": r'(\d[\d.,]*[KMkm]?)\s*(?:vues?|views?|plays?)',
+                        "commentaire_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:commentaires?|comments?)',
+                        "vue_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?)',
                     }
                     scan_results = {}
                     for label, pat in scan_patterns.items():
