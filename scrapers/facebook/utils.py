@@ -48,9 +48,10 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações)",
-        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas)",
-        r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas)",
+        r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+[KMkm]?)",
+        r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+)\s*mille\s*(?:vues?)",
         r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
         r"([\d.,]+)\s*million\s*(?:views?|plays?)",
