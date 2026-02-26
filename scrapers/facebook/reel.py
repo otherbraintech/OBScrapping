@@ -214,6 +214,13 @@ class FacebookReelScraper(FacebookBaseScraper):
                         }
                     });
                     data.engagement_texts = engagementTexts;
+                    
+                    // Comprehensive View Count search
+                    const fullText = document.body.innerText;
+                    const viewMatches = fullText.match(/(\d[\d.,]*[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    if (viewMatches) {
+                        data.view_candidates = viewMatches;
+                    }
 
                     // Video detection
                     const video = mainContainer.querySelector('video');
@@ -299,6 +306,14 @@ class FacebookReelScraper(FacebookBaseScraper):
                         if v:
                             scraped_data["views"] = v
                             self.logger.info(f"Views from DOM text: {v}")
+                
+                # Check view candidates from the whole page text
+                for candidate in js_data.get("view_candidates", []):
+                    if not scraped_data.get("views"):
+                        v = _extract_views_count_from_text(candidate)
+                        if v:
+                            scraped_data["views"] = v
+                            self.logger.info(f"Views from body text candidate: {v}")
                     if not scraped_data.get("reactions"):
                         r = _extract_reactions_count_from_text(text)
                         if r:
