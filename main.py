@@ -123,8 +123,25 @@ async def run_scraper(
         if scraper:
             await scraper.close()
             
+        # Clean webhook payload matching user requirement
+        scraped_data = result.get("data", {})
+        if not isinstance(scraped_data, dict):
+            scraped_data = {}
+            
+        clean_result = {
+            "task_id": result.get("task_id"),
+            "url": result.get("url"),
+            "scraped_at": result.get("scraped_at"),
+            "status": result.get("status"),
+            "error": result.get("error"),
+            "reactions": scraped_data.get("reactions_count", 0),
+            "comments": scraped_data.get("comments_count", 0),
+            "shares": scraped_data.get("shares_count", 0),
+            "views": scraped_data.get("views_count", 0),
+        }
+            
         # Send the final result via webhook
-        await send_webhook(result, task_logger)
+        await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
 app = FastAPI(title="Modular Social Scraper API")

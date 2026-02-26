@@ -15,6 +15,7 @@ from .utils import (
     _extract_reactions_count_from_html,
     _extract_engagement_from_html,
     _extract_engagement_from_visible_text,
+    _deduplicate_fb_images,
     _normalize_count,
 )
 
@@ -264,7 +265,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     if not scraped_data.get("og_image"):
                         scraped_data["video_poster"] = js_data.get("video_poster")
                 # Post type synchronization
-                images = [img["src"] for img in js_data.get("all_images", [])] if "all_images" in js_data else []
+                images = _deduplicate_fb_images([img["src"] for img in js_data.get("all_images", [])]) if "all_images" in js_data else []
                 image_count = len(images)
                 has_video = js_data.get("has_video", True) # Default true for reels
 
@@ -473,15 +474,88 @@ class FacebookReelScraper(FacebookBaseScraper):
                         else "none"
                     ),
                 }
+
+                # -- Diagnostic: scan HTML for engagement-related JSON keys --
+                if page_html:
+                    import re as _re
+                    scan_patterns = {
+                        "comment_count": r'"comment_count"\s*:\s*(\{[^}]{0,80}\}|\d+)',
+                        "total_comment_count": r'"total_comment_count"\s*:\s*(\d+)',
+                        "comments_total": r'"comments"\s*:\s*\{"total_count"\s*:\s*(\d+)',
+                        "play_count": r'"play_count"\s*:\s*(\d+)',
+                        "video_view_count": r'"video_view_count"\s*:\s*(\d+)',
+                        "view_count": r'"view_count"\s*:\s*(\d+)',
+                        "seen_by_count": r'"seen_by_count"\s*:\s*(\{[^}]{0,80}\}|\d+)',
+                        "video_play_count": r'"video_play_count"\s*:\s*(\d+)',
+                        "feedback_count": r'"feedback"\s*:\s*\{[^}]{0,200}',
+                        "commentaire_visible": r'(\d[\d.,]*[KMkm]?)\s*(?:commentaires?|comments?)',
+                        "vue_visible": r'(\d[\d.,]*[KMkm]?)\s*(?:vues?|views?|plays?)',
+                    }
+                    scan_results = {}
+                    for label, pat in scan_patterns.items():
+                        matches = _re.findall(pat, page_html[:500000])  # scan first 500KB
+                        if matches:
+                            scan_results[label] = matches[:3]  # max 3 matches per pattern
+                    debug_info["html_engagement_scan"] = scan_results if scan_results else "no_matches"
+
                 scraped_data["_debug"] = debug_info
             except Exception as de:
                 scraped_data["_debug"] = {"error": str(de)}
 
-            # ---- CLEAN OUTPUT ----
-            scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
+            # ---- CONSTRUCT FINAL CLEAN DATA ----
+            final_data = {
+                "task_id": scraped_data.get("task_id"),
+                "requested_url": scraped_data.get("requested_url"),
+                "final_url": self.page.url if self.page else url,
+                "scraped_at": scraped_data.get("scraped_at"),
+                "content_type": "reel",
+                "username": scraped_data.get("username"),
+                "caption": scraped_data.get("caption"),
+                "post_date": scraped_data.get("post_date"),
+            }
+
+            # Metrics
+            final_data["reactions_count"] = scraped_data.get("reactions_count", 0)
+            final_data["comments_count"] = scraped_data.get("comments_count", 0)
+            final_data["shares_count"] = scraped_data.get("shares_count", 0)
+            final_data["views_count"] = scraped_data.get("views_count", 0)
+
+            # Move secondary media info to a sub-block
+            final_data["media"] = {
+                "video_url": scraped_data.get("video_url") or scraped_data.get("video_src") or scraped_data.get("og_video_url"),
+                "images": scraped_data.get("images", []),
+                "image_count": scraped_data.get("image_count", 0),
+                "video_id": scraped_data.get("target_video_id"),
+                "og_video_width": scraped_data.get("og_video_width"),
+                "og_video_height": scraped_data.get("og_video_height")
+            }
+
+            # Debug block
+            debug_info = scraped_data.get("_debug", {})
+            debug_info["metrics_raw"] = {
+                "reactions": scraped_data.get("reactions"),
+                "comments": scraped_data.get("comments"),
+                "shares": scraped_data.get("shares"),
+                "views": scraped_data.get("views")
+            }
+            final_data["_debug"] = debug_info
+
+            # Standardize ROOT fields only
+            ROOT_KEYS = [
+                "task_id", "requested_url", "final_url", "scraped_at", 
+                "content_type", "username", "caption", "post_date",
+                "reactions_count", "comments_count", "shares_count", "views_count",
+                "media", "_debug"
+            ]
+            
+            # HARD CLEAN: Absolute whitelist of root keys
+            strict_data = {k: final_data[k] for k in ROOT_KEYS if k in final_data and final_data[k] is not None}
+
+            self.logger.info(f"Extraction complete (Reel). Metrics: R={strict_data.get('reactions_count')} C={strict_data.get('comments_count')} S={strict_data.get('shares_count')} V={strict_data.get('views_count')}")
+
             return {
                 "status": "success",
-                "data": scraped_data
+                "data": strict_data
             }
 
         except Exception as e:

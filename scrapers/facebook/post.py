@@ -13,6 +13,7 @@ from .utils import (
     _extract_reactions_count_from_html,
     _extract_engagement_from_html,
     _extract_images_from_html,
+    _deduplicate_fb_images,
     _normalize_count,
 )
 
@@ -340,7 +341,8 @@ class FacebookPostScraper(FacebookBaseScraper):
                     scraped_data["video_duration_seconds"] = js_data["video_duration"]
 
                 # Post type synchronization
-                images = [img["src"] for img in js_data.get("all_images", [])]
+                # Deduplicate DOM-found images first
+                images = _deduplicate_fb_images([img["src"] for img in js_data.get("all_images", [])])
                 image_count = len(images)
                 photo_link_count = js_data.get("photo_link_count", 0)
                 gallery_plus = js_data.get("gallery_plus_count", 0)
@@ -478,13 +480,16 @@ class FacebookPostScraper(FacebookBaseScraper):
                     self.logger.info(f"GraphQL image extraction found {len(html_images)} images")
 
                     if html_images:
+                        # Deduplicate GraphQL images (already done in _extract_images_from_html, but safely re-run)
+                        html_images = _deduplicate_fb_images(html_images)
+                        
                         # Merge with any DOM-found images: prefer the HTML set if larger
                         dom_images = scraped_data.get("images", [])
                         # Use HTML-extracted if it provides more (it should for galleries)
                         if len(html_images) >= len(dom_images):
                             scraped_data["images"] = html_images
                             scraped_data["image_count"] = len(html_images)
-                            self.logger.info(f"Using GraphQL images ({len(html_images)}) over DOM images ({len(dom_images)})")
+                            self.logger.info(f"Using deduplicated GraphQL images ({len(html_images)}) over DOM images ({len(dom_images)})")
 
                         # Re-evaluate post_type with the richer image set
                         new_count = scraped_data.get("image_count", 0)
@@ -501,7 +506,22 @@ class FacebookPostScraper(FacebookBaseScraper):
                     self.logger.warning(f"GraphQL image extraction error: {e}")
                     html_images = []
 
-            # ---- NORMALIZE COUNTS ----
+            # ---- FINAL RE-DEDUPLICATION AND NORMALIZATION ----
+            # Ensure final images list is clean and counts are correct
+            final_images = _deduplicate_fb_images(scraped_data.get("images", []))
+            scraped_data["images"] = final_images
+            scraped_data["image_count"] = len(final_images) or 0
+            
+            # Re-update post_type after all layers and final deduplication
+            has_video = scraped_data.get("video_src") or scraped_data.get("og_video")
+            if has_video:
+                scraped_data["post_type"] = "video"
+            elif scraped_data["image_count"] > 1:
+                scraped_data["post_type"] = "multi_image"
+            elif scraped_data["image_count"] == 1:
+                scraped_data["post_type"] = "single_image"
+            elif not scraped_data.get("post_type"):
+                scraped_data["post_type"] = "text"
             for field in ["reactions", "comments", "shares", "views"]:
                 raw = scraped_data.get(field)
                 if raw:
@@ -509,32 +529,62 @@ class FacebookPostScraper(FacebookBaseScraper):
                     if normalized is not None:
                         scraped_data[f"{field}_count"] = normalized
 
-            # ---- DEBUG BLOCK (always included — remove once stable) ----
-            try:
-                html_images_ref = html_images if 'html_images' in dir() else []
-                debug_info: dict = {
-                    "final_url": self.page.url if self.page else url,
-                    "html_length": len(page_html) if page_html else 0,
-                    "layer6_images_found": len(html_images_ref),
-                    "layer6_image_urls": html_images_ref[:20],
-                }
-                if page_html and debug_raw:
-                    m_idx = page_html.find("scontent")
-                    if m_idx >= 0:
-                        snip_start = max(0, m_idx - 200)
-                        snip_end = min(len(page_html), m_idx + 2800)
-                        debug_info["html_scontent_snippet"] = page_html[snip_start:snip_end]
-                scraped_data["_debug"] = debug_info
-            except Exception as de:
-                scraped_data["_debug"] = {"error": str(de)}
+            # ---- CONSTRUCT FINAL CLEAN DATA ----
+            final_data = {
+                "task_id": scraped_data.get("task_id"),
+                "requested_url": scraped_data.get("requested_url"),
+                "final_url": self.page.url if self.page else url,
+                "scraped_at": scraped_data.get("scraped_at"),
+                "content_type": "post",
+                "post_type": scraped_data.get("post_type"),
+                "username": scraped_data.get("username"),
+                "caption": scraped_data.get("caption"),
+                "post_date": scraped_data.get("post_date"),
+            }
 
-            # ---- CLEAN OUTPUT ----
-            scraped_data = {k: v for k, v in scraped_data.items() if v is not None}
-            self.logger.info(f"Extraction complete. Keys: {list(scraped_data.keys())}")
+            # Metrics - Ensure they are always numbers
+            final_data["reactions_count"] = scraped_data.get("reactions_count", 0)
+            final_data["comments_count"] = scraped_data.get("comments_count", 0)
+            final_data["shares_count"] = scraped_data.get("shares_count", 0)
+            final_data["views_count"] = scraped_data.get("views_count", 0)
+
+            # Move secondary media info to a sub-block to avoid noise
+            final_data["media"] = {
+                "images": scraped_data.get("images", []),
+                "image_count": scraped_data.get("image_count", 0),
+                "video_url": scraped_data.get("video_src") or scraped_data.get("og_video_url"),
+                "video_duration": scraped_data.get("video_duration_seconds"),
+                "has_video": scraped_data.get("post_type") == "video",
+                "gallery_plus_count": scraped_data.get("gallery_plus_count")
+            }
+
+            # Debug block
+            debug_info = scraped_data.get("_debug", {})
+            debug_info["metrics_raw"] = {
+                "reactions": scraped_data.get("reactions"),
+                "comments": scraped_data.get("comments"),
+                "shares": scraped_data.get("shares"),
+                "views": scraped_data.get("views"),
+                "reactions_context": scraped_data.get("reactions_context")
+            }
+            final_data["_debug"] = debug_info
+
+            # Standardize ROOT fields only
+            ROOT_KEYS = [
+                "task_id", "requested_url", "final_url", "scraped_at", 
+                "content_type", "post_type", "username", "caption", "post_date",
+                "reactions_count", "comments_count", "shares_count", "views_count",
+                "media", "_debug"
+            ]
+            
+            # HARD CLEAN: Absolute whitelist of root keys
+            strict_data = {k: final_data[k] for k in ROOT_KEYS if k in final_data and final_data[k] is not None}
+
+            self.logger.info(f"Extraction complete (Post). Metrics: R={strict_data.get('reactions_count')} C={strict_data.get('comments_count')} S={strict_data.get('shares_count')} V={strict_data.get('views_count')}")
 
             return {
                 "status": "success",
-                "data": scraped_data
+                "data": strict_data
             }
 
         except Exception as e:

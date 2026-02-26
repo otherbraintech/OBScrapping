@@ -191,25 +191,46 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
     return result
 
 
+def _get_fb_image_signature(url: str) -> str:
+    """
+    Extracts a unique signature from a Facebook CDN image URL.
+    Facebook URLs for the same image often share the same set of numeric IDs
+    in the filename (e.g. [account_id]_[photo_id]_[misc]_n.jpg).
+    """
+    # Strip query params
+    base = url.split('?')[0]
+    # Get filename part
+    filename = base.split('/')[-1]
+    
+    # Extract all numeric parts that look like IDs (length > 7)
+    # This is more robust than just picking the first part
+    ids = re.findall(r'(\d{8,})', filename)
+    if ids:
+        return ".".join(ids)
+    
+    # Fallback: if no long segments, take the whole filename without extension
+    return re.sub(r'\.[a-z0-9]+$', '', filename, flags=re.IGNORECASE)
+
+def _deduplicate_fb_images(urls: list[str]) -> list[str]:
+    """Deduplicates Facebook image URLs by their unique signature (ID)."""
+    seen_sigs = set()
+    unique_urls = []
+    for url in urls:
+        sig = _get_fb_image_signature(url)
+        if sig not in seen_sigs:
+            seen_sigs.add(sig)
+            unique_urls.append(url)
+    return unique_urls
+
 def _extract_images_from_html(html: str) -> list:
     """
     Extracts all post image URLs from Facebook's inline GraphQL JSON blobs.
-
-    Key insight from debugging:
-    - Facebook embeds React state with photo data deep in the 1MB+ HTML
-    - Photo CDN uses scontent-*.fbcdn.net or scontent.*.fbcdn.net 
-    - UI/icon CDN uses static.xx.fbcdn.net (must be EXCLUDED)
-    - JSON strings use escaped forward slashes: https:\/\/scontent-...
-    - Thumbnails have size params like s150x150 or p100x100 in the URL
-
     Returns a deduplicated list of unique high-resolution photo URLs.
+    Deduplication is done by image signature to avoid multiple resolutions.
     """
-    seen: set = set()
     images: list = []
 
     # We do a broad search: find every occurrence of scontent-* or scontent.* in the HTML
-    # These are photo CDN URLs, distinct from static.xx.fbcdn.net which is UI/icons
-    # Pattern handles both escaped (JSON) and unescaped (HTML attrs) forms
     broad_pattern = re.compile(
         r'https?:\\?/\\?/scontent[^"\'<>\s]+'
         r'\.(?:jpg|jpeg|png|webp)'
@@ -229,28 +250,27 @@ def _extract_images_from_html(html: str) -> list:
         except Exception:
             pass
 
-        # Skip tiny thumbnail sizes (Facebook encodes sizes like s40x40, p100x100, s75x75)
-        # BUT s600x600 is a real image — only skip if BOTH dimensions are under 200px
+        # Skip tiny thumbnail sizes
         size_match = re.search(r'[sp](\d+)x(\d+)', url)
         if size_match:
-            w = int(size_match.group(1))
-            h = int(size_match.group(2))
-            if w < 200 and h < 200:
-                continue
+            try:
+                w = int(size_match.group(1))
+                h = int(size_match.group(2))
+                if w < 200 and h < 200:
+                    continue
+            except (ValueError, IndexError):
+                pass
 
-        # Skip profile images
-        skip_keywords = ["/safe_image/", "/cp/", "profile_pic", "emoji", "sticker"]
+        # Skip profile images and UI elements
+        skip_keywords = ["/safe_image/", "/cp/", "profile_pic", "emoji", "sticker", "static.xx.fbcdn.net"]
         if any(kw in url for kw in skip_keywords):
             continue
 
-        # Normalize: strip trailing punctuation that might bleed in from HTML context
+        # Normalize: strip trailing punctuation
         url = url.rstrip('.,;)')
+        images.append(url)
 
-        if url not in seen:
-            seen.add(url)
-            images.append(url)
-
-    return images
+    return _deduplicate_fb_images(images)
 
 
 def _extract_reactions_count_from_html(html: str) -> Optional[str]:
