@@ -143,6 +143,10 @@ async def run_scraper(
             "views": scraped_data.get("views_count", 0),
         }
 
+        # Ensure rawData for DB contains EVERYTHING including _debug
+        # If scraped_data is already a dict, it contains _debug at this point
+        persistence_data = scraped_data 
+
         # -- Debug Logging for User --
         task_logger.info(f"DEBUG - EXTRACTION RESULTS SUMMARY: {json.dumps(clean_result, indent=2)}")
         
@@ -179,7 +183,7 @@ async def run_scraper(
                         views=clean_result.get("views"),
                         error=clean_result.get("error"),
                         scraped_at=datetime.fromisoformat(str(result.get("scraped_at"))),
-                        raw_data=scraped_data,
+                        raw_data=persistence_data,
                         request_id=db_request.id
                     )
                     
