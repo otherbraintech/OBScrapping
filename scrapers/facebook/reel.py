@@ -528,6 +528,14 @@ class FacebookReelScraper(FacebookBaseScraper):
             except Exception as de:
                 scraped_data["_debug"] = {"error": str(de)}
 
+            # Normalize all metric counts
+            for field in ["reactions", "comments", "shares", "views"]:
+                raw = scraped_data.get(field)
+                if raw:
+                    normalized = _normalize_count(str(raw))
+                    if normalized is not None:
+                        scraped_data[f"{field}_count"] = normalized
+
             # ---- CONSTRUCT FINAL CLEAN DATA ----
             final_data = {
                 "task_id": scraped_data.get("task_id"),

@@ -51,10 +51,11 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
         r"([\d.,]+[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
         r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+[KMkm]?)",
         r"([\d.,]+)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
-        r"([\d.,]+)\s*millones\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d.,]+)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+)\s*mille\s*(?:vues?)",
         r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
         r"([\d.,]+)\s*million\s*(?:views?|plays?)",
+        r"([\d.,]+)\s*vistos?",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -77,24 +78,36 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
         elif any(kw in t_low for kw in ["tú, ", "usted, ", "you, "]):
             added_count = 2
 
-    s = s.replace(" ", "")
-    m_mil = re.match(r"^(\d+(?:[\.,]\d+)?)mil$", s, re.IGNORECASE)
-    if m_mil:
-        num = float(m_mil.group(1).replace(",", "."))
-        return int(num * 1000) + added_count
+    s = s.replace(" ", "").lower()
     
-    m = re.match(r"^(\d+(?:[\.,]\d+)?)\s*([KkMm])$", s)
-    if m:
-        num = float(m.group(1).replace(",", "."))
-        mult = 1000 if m.group(2).lower() == "k" else 1000000
-        return int(num * mult) + added_count
+    # Handle suffixes K, M
+    mult = 1
+    if s.endswith('k'):
+        mult = 1000
+        s = s[:-1]
+    elif s.endswith('m'):
+        mult = 1000000
+        s = s[:-1]
     
-    s_digits = re.sub(r"[^0-9]", "", s)
-    if not s_digits:
-        return None
+    # Handle localized separators
+    # Case "1.5" or "1,5" -> float. Deciding which is decimal is tricky.
+    # Usually if there is only one dot/comma and it's near the end, it's decimal.
+    # But for simplicity, we treat both as possible decimals if smaller than 1000.
+    s = s.replace(",", ".")
+    
     try:
-        return int(s_digits) + added_count
-    except Exception:
+        # If there are multiple dots now (from 1.234.567), keep only the last one for decimal
+        if s.count('.') > 1:
+            parts = s.split('.')
+            s = "".join(parts[:-1]) + "." + parts[-1]
+            
+        num = float(s)
+        return int(num * mult) + added_count
+    except (ValueError, TypeError):
+        # Last resort: just digits
+        digits = re.sub(r"[^0-9]", "", s)
+        if digits:
+            return int(digits) + added_count
         return None
 
 def _extract_engagement_from_html(html: str) -> dict:

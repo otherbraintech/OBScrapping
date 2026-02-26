@@ -144,9 +144,13 @@ async def run_scraper(
         }
 
         # -- Debug Logging for User --
-        task_logger.info(f"DEBUG - EXTRACTION RESULTS: {json.dumps(clean_result, indent=2)}")
+        task_logger.info(f"DEBUG - EXTRACTION RESULTS SUMMARY: {json.dumps(clean_result, indent=2)}")
+        
+        has_html = "_debug" in scraped_data and "full_html" in scraped_data["_debug"]
+        html_size = len(scraped_data["_debug"]["full_html"]) if has_html else 0
+        task_logger.info(f"DEBUG - PERSISTENCE INFO: Raw HTML present={has_html}, Size={html_size}")
+        
         if result.get("status") == "success":
-            # Attempt to log a small context of the HTML for troubleshooting
             task_logger.info(f"DEBUG - SUCCESSFUL EXTRACTION. Content Type: {clean_result.get('content_type')}")
             
         # Database persistence
