@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, HttpUrl
+from database import SessionLocal, ScrapeRequest as DBScrapeRequest, ScrapeResult as DBScrapeResult, get_db
+from sqlalchemy.orm import Session
 
 # Load environment variables
 load_dotenv()
@@ -134,14 +136,53 @@ async def run_scraper(
             "scraped_at": result.get("scraped_at"),
             "status": result.get("status"),
             "error": result.get("error"),
+            "content_type": scraped_data.get("content_type", "unknown"),
             "reactions": scraped_data.get("reactions_count", 0),
             "comments": scraped_data.get("comments_count", 0),
             "shares": scraped_data.get("shares_count", 0),
             "views": scraped_data.get("views_count", 0),
         }
             
-        # Send the final result via webhook
-        await send_webhook(clean_result, task_logger)
+        # Database persistence
+        try:
+            db: Session = SessionLocal()
+            # 1. Buscar la solicitud original por task_id
+            db_request = db.query(DBScrapeRequest).filter(DBScrapeRequest.task_id == task_id).first()
+            
+            if db_request:
+                task_logger.info(f"Guardando resultados en la BD para request_id: {db_request.id}")
+                
+                # 2. Actualizar estado de la solicitud
+                db_request.status = result.get("status")
+                db_request.updated_at = datetime.utcnow()
+                
+                # 3. Crear el resultado detallado
+                db_result = DBScrapeResult(
+                    id=str(uuid.uuid4()),
+                    content_type=clean_result.get("content_type"),
+                    reactions=clean_result.get("reactions"),
+                    comments=clean_result.get("comments"),
+                    shares=clean_result.get("shares"),
+                    views=clean_result.get("views"),
+                    error=clean_result.get("error"),
+                    scraped_at=datetime.fromisoformat(str(result.get("scraped_at"))),
+                    raw_data=scraped_data,
+                    request_id=db_request.id
+                )
+                
+                db.add(db_result)
+                db.commit()
+                task_logger.info("Datos guardados exitosamente en la base de datos.")
+            else:
+                task_logger.warning(f"No se encontró ScrapeRequest para task_id {task_id}")
+            
+            db.close()
+        except Exception as db_err:
+            task_logger.error(f"Error al guardar en base de datos: {db_err}")
+
+        # Optional: Send the final result via webhook if configured (Legacy support)
+        if WEBHOOK_URL:
+            await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
 app = FastAPI(title="Modular Social Scraper API")
