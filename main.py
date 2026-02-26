@@ -145,38 +145,41 @@ async def run_scraper(
             
         # Database persistence
         try:
-            db: Session = SessionLocal()
-            # 1. Buscar la solicitud original por task_id
-            db_request = db.query(DBScrapeRequest).filter(DBScrapeRequest.task_id == task_id).first()
-            
-            if db_request:
-                task_logger.info(f"Guardando resultados en la BD para request_id: {db_request.id}")
-                
-                # 2. Actualizar estado de la solicitud
-                db_request.status = result.get("status")
-                db_request.updated_at = datetime.utcnow()
-                
-                # 3. Crear el resultado detallado
-                db_result = DBScrapeResult(
-                    id=str(uuid.uuid4()),
-                    content_type=clean_result.get("content_type"),
-                    reactions=clean_result.get("reactions"),
-                    comments=clean_result.get("comments"),
-                    shares=clean_result.get("shares"),
-                    views=clean_result.get("views"),
-                    error=clean_result.get("error"),
-                    scraped_at=datetime.fromisoformat(str(result.get("scraped_at"))),
-                    raw_data=scraped_data,
-                    request_id=db_request.id
-                )
-                
-                db.add(db_result)
-                db.commit()
-                task_logger.info("Datos guardados exitosamente en la base de datos.")
+            if SessionLocal is None:
+                task_logger.error("No se pudo iniciar la persistencia: SessionLocal no está configurado (¿DATABASE_URL faltante?)")
             else:
-                task_logger.warning(f"No se encontró ScrapeRequest para task_id {task_id}")
-            
-            db.close()
+                db: Session = SessionLocal()
+                # 1. Buscar la solicitud original por task_id
+                db_request = db.query(DBScrapeRequest).filter(DBScrapeRequest.task_id == task_id).first()
+                
+                if db_request:
+                    task_logger.info(f"Guardando resultados en la BD para request_id: {db_request.id}")
+                    
+                    # 2. Actualizar estado de la solicitud
+                    db_request.status = result.get("status")
+                    db_request.updated_at = datetime.utcnow()
+                    
+                    # 3. Crear el resultado detallado
+                    db_result = DBScrapeResult(
+                        id=str(uuid.uuid4()),
+                        content_type=clean_result.get("content_type"),
+                        reactions=clean_result.get("reactions"),
+                        comments=clean_result.get("comments"),
+                        shares=clean_result.get("shares"),
+                        views=clean_result.get("views"),
+                        error=clean_result.get("error"),
+                        scraped_at=datetime.fromisoformat(str(result.get("scraped_at"))),
+                        raw_data=scraped_data,
+                        request_id=db_request.id
+                    )
+                    
+                    db.add(db_result)
+                    db.commit()
+                    task_logger.info("Datos guardados exitosamente en la base de datos.")
+                else:
+                    task_logger.warning(f"No se encontró ScrapeRequest para task_id {task_id}")
+                
+                db.close()
         except Exception as db_err:
             task_logger.error(f"Error al guardar en base de datos: {db_err}")
 

@@ -9,12 +9,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    print("FATAL ERROR: DATABASE_URL is not set in environment variables.")
+    # For testing or fallback, but in production we want to know it's missing
+    # DATABASE_URL = "sqlite:///./test.db" 
+
 # SQLAlchemy requires 'postgresql://' instead of 'postgres://' sometimes
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+if DATABASE_URL:
+    engine = create_engine(DATABASE_URL)
+else:
+    # This will still fail downstream but at least we printed the error above
+    engine = None
+
+if engine:
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+else:
+    SessionLocal = None
 Base = declarative_base()
 
 class User(Base):
