@@ -487,6 +487,8 @@ class FacebookReelScraper(FacebookBaseScraper):
                         "view_count": r'"view_count"\s*:\s*(\d+)',
                         "seen_by_count": r'"seen_by_count"\s*:\s*(\{[^}]{0,80}\}|\d+)',
                         "video_play_count": r'"video_play_count"\s*:\s*(\d+)',
+                        "reaction_count": r'"reaction_count"\s*:\s*\{"count"\s*:\s*(\d+)',
+                        "total_reaction_count": r'"total_reaction_count"\s*:\s*(\d+)',
                         "feedback_count": r'"feedback"\s*:\s*\{[^}]{0,200}',
                         "commentaire_visible": r'(\d[\d.,]*[KMkm]?)\s*(?:commentaires?|comments?)',
                         "vue_visible": r'(\d[\d.,]*[KMkm]?)\s*(?:vues?|views?|plays?)',

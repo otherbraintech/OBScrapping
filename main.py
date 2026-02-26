@@ -142,6 +142,12 @@ async def run_scraper(
             "shares": scraped_data.get("shares_count", 0),
             "views": scraped_data.get("views_count", 0),
         }
+
+        # -- Debug Logging for User --
+        task_logger.info(f"DEBUG - EXTRACTION RESULTS: {json.dumps(clean_result, indent=2)}")
+        if result.get("status") == "success":
+            # Attempt to log a small context of the HTML for troubleshooting
+            task_logger.info(f"DEBUG - SUCCESSFUL EXTRACTION. Content Type: {clean_result.get('content_type')}")
             
         # Database persistence
         try:
