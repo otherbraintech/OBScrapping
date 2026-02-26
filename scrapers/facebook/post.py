@@ -376,30 +376,45 @@ class FacebookPostScraper(FacebookBaseScraper):
                     scraped_data["gallery_plus_count"] = gallery_plus
 
 
-                # Parse aria-labels for engagement
-                for label in js_data.get("aria_labels", []):
-                    low_label = label.lower()
-                    if "mira quién ha reaccionado" in low_label or "consulta quién reaccionó" in low_label:
+                # Parse aria-labels and engagement_texts for engagement
+                all_texts = (js_data.get("aria_labels") or []) + (js_data.get("engagement_texts") or [])
+                for text in all_texts:
+                    low_text = text.lower()
+                    if "mira quién ha reaccionado" in low_text or "consulta quién reaccionó" in low_text:
                         continue
-                    total_r = _extract_reactions_count_from_text(label)
+                    
+                    # Reactions
+                    total_r = _extract_reactions_count_from_text(text)
                     if total_r:
                         old_v = _normalize_count(scraped_data.get("reactions"), scraped_data.get("reactions_context")) or 0
-                        new_v = _normalize_count(total_r, label) or 0
+                        new_v = _normalize_count(total_r, text) or 0
                         if new_v > old_v:
                             scraped_data["reactions"] = total_r
-                            scraped_data["reactions_context"] = label
-                    if not scraped_data.get("comments"):
-                        c = _extract_comments_count_from_text(label)
-                        if c:
-                            scraped_data["comments"] = c
-                    if not scraped_data.get("views"):
-                        v = _extract_views_count_from_text(label)
-                        if v:
-                            scraped_data["views"] = v
-                    if not scraped_data.get("shares"):
-                        s = _extract_shares_count_from_text(label)
-                        if s:
-                            scraped_data["shares"] = s
+                            scraped_data["reactions_context"] = text
+                    
+                    # Comments
+                    total_c = _extract_comments_count_from_text(text)
+                    if total_c:
+                        old_v = _normalize_count(scraped_data.get("comments")) or 0
+                        new_v = _normalize_count(total_c) or 0
+                        if new_v > old_v:
+                            scraped_data["comments"] = total_c
+                    
+                    # Views
+                    total_v = _extract_views_count_from_text(text)
+                    if total_v:
+                        old_v = _normalize_count(scraped_data.get("views")) or 0
+                        new_v = _normalize_count(total_v) or 0
+                        if new_v > old_v:
+                            scraped_data["views"] = total_v
+                    
+                    # Shares
+                    total_s = _extract_shares_count_from_text(text)
+                    if total_s:
+                        old_v = _normalize_count(scraped_data.get("shares")) or 0
+                        new_v = _normalize_count(total_s) or 0
+                        if new_v > old_v:
+                            scraped_data["shares"] = total_s
 
                 # Parse engagement texts + button texts
                 all_texts = js_data.get("engagement_texts", []) + js_data.get("button_texts", [])
@@ -439,18 +454,15 @@ class FacebookPostScraper(FacebookBaseScraper):
             # ---- LAYER 4: PAGE BODY TEXT FALLBACK ----
             try:
                 page_text = await self.page.inner_text("body")
-                if not scraped_data.get("comments"):
-                    m = re.search(r'([\d,.]+)\s*(?:comments?|comentarios)', page_text, re.IGNORECASE)
-                    if m:
-                        scraped_data["comments"] = m.group(1)
-                if not scraped_data.get("reactions"):
-                    m = re.search(r'([\d,.]+)\s*(?:personas\s*(?:más\s*)?reaccionaron|reacciones|reactions)', page_text, re.IGNORECASE)
-                    if m:
-                        scraped_data["reactions"] = m.group(1)
-                if not scraped_data.get("shares"):
-                    m = re.search(r'([\d,.]+)\s*(?:veces compartido|shares?)', page_text, re.IGNORECASE)
-                    if m:
-                        scraped_data["shares"] = m.group(1)
+                for k, func in [("reactions", _extract_reactions_count_from_text), 
+                                ("comments", _extract_comments_count_from_text), 
+                                ("shares", _extract_shares_count_from_text),
+                                ("views", _extract_views_count_from_text)]:
+                    val = func(page_text)
+                    if val:
+                        curr = scraped_data.get(k)
+                        if not curr or _normalize_count(str(val)) > _normalize_count(str(curr)):
+                            scraped_data[k] = str(val)
             except Exception as e:
                 self.logger.warning(f"Page text fallback error: {e}")
 
@@ -458,18 +470,30 @@ class FacebookPostScraper(FacebookBaseScraper):
             if page_html:
                 try:
                     embedded = _extract_engagement_from_html(page_html)
-                    if embedded.get("reactions") and not scraped_data.get("reactions"):
-                        scraped_data["reactions"] = str(embedded["reactions"])
-                    if embedded.get("comments") and not scraped_data.get("comments"):
-                        scraped_data["comments"] = str(embedded["comments"])
-                    if embedded.get("shares") and not scraped_data.get("shares"):
-                        scraped_data["shares"] = str(embedded["shares"])
-                    if embedded.get("views") and not scraped_data.get("views"):
-                        scraped_data["views"] = str(embedded["views"])
+                    for k in ["reactions", "comments", "shares", "views"]:
+                        val = embedded.get(k)
+                        if val:
+                            curr = scraped_data.get(k)
+                            if not curr or _normalize_count(str(val)) > _normalize_count(str(curr)):
+                                scraped_data[k] = str(val)
                     if embedded:
                         self.logger.info(f"GraphQL HTML extraction found: {embedded}")
                 except Exception as e:
                     self.logger.warning(f"GraphQL HTML extraction error: {e}")
+
+            # ---- LAYER 5b: VISIBLE TEXT PATTERNS IN HTML ----
+            if page_html:
+                try:
+                    visible = _extract_engagement_from_visible_text(page_html)
+                    for k in ["reactions", "comments", "shares", "views"]:
+                        val = visible.get(k)
+                        if val:
+                            curr = scraped_data.get(k)
+                            if not curr or _normalize_count(str(val)) > _normalize_count(str(curr)):
+                                scraped_data[k] = str(val)
+                    self.logger.info(f"Visible text extraction found: {visible}")
+                except Exception as e:
+                    self.logger.warning(f"Visible text extraction error: {e}")
 
             # ---- LAYER 6: GraphQL JSON IMAGE EXTRACTION ----
             # Facebook embeds ALL gallery image URIs in inline script JSON.

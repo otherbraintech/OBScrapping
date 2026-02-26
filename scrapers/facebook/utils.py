@@ -56,6 +56,7 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
         r"([\d.,]+)\s*thousand\s*(?:views?|plays?)",
         r"([\d.,]+)\s*million\s*(?:views?|plays?)",
         r"([\d.,]+)\s*vistos?",
+        r"(?:再生回数|reproductions|reproduce|vues)\s*:\s*([\d.,]+[KMkm]?)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -160,9 +161,12 @@ def _extract_engagement_from_html(html: str) -> dict:
             m = re.search(pat, html)
             if m:
                 try:
-                    val_str = m.group(1).replace(",", "").replace(".", "")
-                    result[field] = int(val_str)
-                    break
+                    raw_val = m.group(1)
+                    # Use _normalize_count to handle K, M and localized separators correctly
+                    normalized = _normalize_count(raw_val)
+                    if normalized is not None:
+                        result[field] = normalized
+                        break
                 except (ValueError, IndexError):
                     continue
 

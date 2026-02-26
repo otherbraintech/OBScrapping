@@ -296,32 +296,41 @@ class FacebookReelScraper(FacebookBaseScraper):
                 # ---- Extract engagement from aria_labels and engagement_texts ----
                 all_texts = (js_data.get("aria_labels") or []) + (js_data.get("engagement_texts") or [])
                 for text in all_texts:
-                    if not scraped_data.get("comments"):
-                        c = _extract_comments_count_from_text(text)
-                        if c:
+                    # Reactions
+                    r = _extract_reactions_count_from_text(text)
+                    if r:
+                        curr = scraped_data.get("reactions")
+                        if not curr or _normalize_count(r) > _normalize_count(str(curr)):
+                            scraped_data["reactions"] = r
+                    
+                    # Comments
+                    c = _extract_comments_count_from_text(text)
+                    if c:
+                        curr = scraped_data.get("comments")
+                        if not curr or _normalize_count(c) > _normalize_count(str(curr)):
                             scraped_data["comments"] = c
-                            self.logger.info(f"Comments from DOM text: {c}")
-                    if not scraped_data.get("views"):
-                        v = _extract_views_count_from_text(text)
-                        if v:
+                    
+                    # Shares
+                    s = _extract_shares_count_from_text(text)
+                    if s:
+                        curr = scraped_data.get("shares")
+                        if not curr or _normalize_count(s) > _normalize_count(str(curr)):
+                            scraped_data["shares"] = s
+
+                    # Views
+                    v = _extract_views_count_from_text(text)
+                    if v:
+                        curr = scraped_data.get("views")
+                        if not curr or _normalize_count(v) > _normalize_count(str(curr)):
                             scraped_data["views"] = v
-                            self.logger.info(f"Views from DOM text: {v}")
                 
                 # Check view candidates from the whole page text
                 for candidate in js_data.get("view_candidates", []):
-                    if not scraped_data.get("views"):
-                        v = _extract_views_count_from_text(candidate)
-                        if v:
+                    v = _extract_views_count_from_text(candidate)
+                    if v:
+                        curr = scraped_data.get("views")
+                        if not curr or _normalize_count(v) > _normalize_count(str(curr)):
                             scraped_data["views"] = v
-                            self.logger.info(f"Views from body text candidate: {v}")
-                    if not scraped_data.get("reactions"):
-                        r = _extract_reactions_count_from_text(text)
-                        if r:
-                            scraped_data["reactions"] = r
-                    if not scraped_data.get("shares"):
-                        s = _extract_shares_count_from_text(text)
-                        if s:
-                            scraped_data["shares"] = s
 
             except Exception as e:
                 self.logger.warning(f"JS extraction error in Reels: {e}")
@@ -330,29 +339,28 @@ class FacebookReelScraper(FacebookBaseScraper):
             if page_html:
                 try:
                     embedded = _extract_engagement_from_html(page_html)
-                    if embedded.get("reactions") and not scraped_data.get("reactions"):
-                        scraped_data["reactions"] = str(embedded["reactions"])
-                    if embedded.get("comments") and not scraped_data.get("comments"):
-                        scraped_data["comments"] = str(embedded["comments"])
-                    if embedded.get("shares") and not scraped_data.get("shares"):
-                        scraped_data["shares"] = str(embedded["shares"])
-                    if embedded.get("views") and not scraped_data.get("views"):
-                        scraped_data["views"] = str(embedded["views"])
+                    for k in ["reactions", "comments", "shares", "views"]:
+                        val = embedded.get(k)
+                        if val:
+                            curr = scraped_data.get(k)
+                            if not curr or _normalize_count(str(val)) > _normalize_count(str(curr)):
+                                scraped_data[k] = str(val)
                     if embedded:
                         self.logger.info(f"GraphQL Reels extraction found: {embedded}")
                 except Exception as e:
                     self.logger.warning(f"GraphQL Reels extraction error: {e}")
 
             # ---- LAYER 4b: VISIBLE TEXT PATTERNS IN HTML ----
-            if page_html and (not scraped_data.get("comments") or not scraped_data.get("views")):
+            if page_html:
                 try:
                     visible = _extract_engagement_from_visible_text(page_html)
-                    if visible.get("comments") and not scraped_data.get("comments"):
-                        scraped_data["comments"] = visible["comments"]
-                        self.logger.info(f"Comments from visible HTML text: {visible['comments']}")
-                    if visible.get("views") and not scraped_data.get("views"):
-                        scraped_data["views"] = visible["views"]
-                        self.logger.info(f"Views from visible HTML text: {visible['views']}")
+                    for k in ["reactions", "comments", "shares", "views"]:
+                        val = visible.get(k)
+                        if val:
+                            curr = scraped_data.get(k)
+                            if not curr or _normalize_count(str(val)) > _normalize_count(str(curr)):
+                                scraped_data[k] = str(val)
+                    self.logger.info(f"Visible text extraction found: {visible}")
                 except Exception as e:
                     self.logger.warning(f"Visible text extraction error: {e}")
 
