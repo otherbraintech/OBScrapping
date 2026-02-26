@@ -144,8 +144,10 @@ async def run_scraper(
         }
 
         # Ensure rawData for DB contains EVERYTHING including _debug
-        # If scraped_data is already a dict, it contains _debug at this point
+        # We explicitly ensure _debug is preserved as per user request
         persistence_data = scraped_data 
+        if "_debug" in scraped_data:
+            persistence_data["_debug"] = scraped_data["_debug"]
 
         # -- Debug Logging for User --
         task_logger.info(f"DEBUG - EXTRACTION RESULTS SUMMARY: {json.dumps(clean_result, indent=2)}")
