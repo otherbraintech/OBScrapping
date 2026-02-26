@@ -6,7 +6,7 @@ def _extract_shares_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+\s*(?:[KMkm]|mil|mille|partages?)?)\s*(?:shares?|compartido|compartidos|veces compartido|partages?|condivisioni|compartilhamentos)",
+        r"([\d.,]+\s*[KMkm]?)\s*(?:shares?|compartido|compartidos|veces compartido|partages?|condivisioni|compartilhamentos)",
         r"([\d.,]+)\s*veces\s*compartido",
         r"([\d.,]+\s*[KMkm]?)\s*fois\s*partagé",
         r"([\d.,]+\s*[KMkm]?)\s*repartages",
@@ -53,11 +53,6 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
         r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million)?)",
         r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
-        r"([\d.,]+\s*[KMkm]?)\s*mille\s*(?:vues?)",
-        r"([\d.,]+\s*[KMkm]?)\s*thousand\s*(?:views?|plays?)",
-        r"([\d.,]+\s*[KMkm]?)\s*million\s*(?:views?|plays?)",
-        r"([\d.,]+\s*[KMkm]?)\s*vistos?",
-        r"(?:再生回数|reproductions|reproduce|vues)\s*:\s*([\d.,]+\s*[KMkm]?)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)

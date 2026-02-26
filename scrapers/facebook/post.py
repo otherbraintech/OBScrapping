@@ -172,7 +172,8 @@ class FacebookPostScraper(FacebookBaseScraper):
             try:
                 js_data = await self.page.evaluate("""() => {
                     const data = {};
-                    const mainContainer = document.querySelector('div[role="main"]')
+                    const mainContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
+                        || document.querySelector('div[role="main"]')
                         || document.querySelector('div[role="article"]')
                         || document;
 
@@ -201,6 +202,15 @@ class FacebookPostScraper(FacebookBaseScraper):
                         if (text && text.length < 100) buttonTexts.push(text);
                     });
                     data.button_texts = buttonTexts;
+                    
+                    // Comprehensive View Count search - Prioritize counts with units
+                    const fullText = mainContainer.innerText || "";
+                    const viewMatches = fullText.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    if (viewMatches) {
+                        // Sort by length to pick "17 millones" over "1.1K" if both exist in container
+                        viewMatches.sort((a, b) => b.length - a.length);
+                        data.view_candidates = viewMatches;
+                    }
 
                     // Video detection
                     const video = mainContainer.querySelector('video');

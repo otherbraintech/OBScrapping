@@ -141,6 +141,7 @@ async def run_scraper(
             "comments": scraped_data.get("comments_count", 0),
             "shares": scraped_data.get("shares_count", 0),
             "views": scraped_data.get("views_count", 0),
+            "_debug": scraped_data.get("_debug", {})
         }
 
         # Ensure rawData for DB contains EVERYTHING including _debug

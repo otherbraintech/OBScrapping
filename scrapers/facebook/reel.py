@@ -192,9 +192,9 @@ class FacebookReelScraper(FacebookBaseScraper):
             try:
                 js_data = await self.page.evaluate("""() => {
                     const data = {};
-                    const mainContainer = document.querySelector('div[role="main"]')
+                    const mainContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
+                        || document.querySelector('div[role="main"]')
                         || document.querySelector('div[role="article"]')
-                        || document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
                         || document;
 
                     // Aria labels
@@ -215,10 +215,12 @@ class FacebookReelScraper(FacebookBaseScraper):
                     });
                     data.engagement_texts = engagementTexts;
                     
-                    // Comprehensive View Count search
+                    // Comprehensive View Count search - Prioritize counts with units
                     const fullText = mainContainer.innerText || "";
                     const viewMatches = fullText.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
                     if (viewMatches) {
+                        // Sort by length to pick "17 millones" over "1.1K" if both exist in container
+                        viewMatches.sort((a, b) => b.length - a.length);
                         data.view_candidates = viewMatches;
                     }
 
