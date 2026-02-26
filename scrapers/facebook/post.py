@@ -560,6 +560,8 @@ class FacebookPostScraper(FacebookBaseScraper):
 
             # Debug block
             debug_info = scraped_data.get("_debug", {})
+            if page_html:
+                debug_info["full_html"] = page_html
             debug_info["metrics_raw"] = {
                 "reactions": scraped_data.get("reactions"),
                 "comments": scraped_data.get("comments"),

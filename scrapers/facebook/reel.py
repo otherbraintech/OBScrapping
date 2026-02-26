@@ -522,6 +522,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     if marker == -1: marker = page_html.find('role="article"')
                     if marker == -1: marker = 0
                     debug_info["html_snippet"] = page_html[marker : marker + 5000]
+                    debug_info["full_html"] = page_html
 
                 scraped_data["_debug"] = debug_info
             except Exception as de:
