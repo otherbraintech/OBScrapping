@@ -6,9 +6,10 @@ def _extract_shares_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+\s*[KMkm]?)\s*(?:shares?|compartido|veces compartido|partages?|condivisioni|compartilhamentos)",
+        r"([\d.,]+\s*(?:[KMkm]|mil|mille|partages?)?)\s*(?:shares?|compartido|compartidos|veces compartido|partages?|condivisioni|compartilhamentos)",
         r"([\d.,]+)\s*veces\s*compartido",
         r"([\d.,]+\s*[KMkm]?)\s*fois\s*partagé",
+        r"([\d.,]+\s*[KMkm]?)\s*repartages",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -48,8 +49,8 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
     patterns = [
-        r"([\d.,]+\s*[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
-        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+\s*[KMkm]?)",
+        r"([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million)?)",
         r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+\s*[KMkm]?)\s*mille\s*(?:vues?)",
@@ -81,19 +82,32 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
 
     s = re.sub(r"\s+", "", s).lower()
     
-    # Handle suffixes K, M
+    # Handle suffixes K, M, and word units
     mult = 1
-    if s.endswith('k'):
+    
+    # Check for millions (longer words first)
+    if any(s.endswith(x) for x in ['millones', 'million', 'millón', 'millon']):
+        mult = 1000000
+        for x in ['millones', 'million', 'millón', 'millon']:
+            if s.endswith(x):
+                s = s[:-len(x)]
+                break
+    elif any(s.endswith(x) for x in ['mil', 'mille']):
+        mult = 1000
+        for x in ['mil', 'mille']:
+            if s.endswith(x):
+                s = s[:-len(x)]
+                break
+    elif s.endswith('k'):
         mult = 1000
         s = s[:-1]
     elif s.endswith('m'):
+        # M can be ambiguous (mil vs million), but usually million in English/French
+        # If it was Spanish "mil", it would likely have matched above.
         mult = 1000000
         s = s[:-1]
     
     # Handle localized separators
-    # Case "1.5" or "1,5" -> float. Deciding which is decimal is tricky.
-    # Usually if there is only one dot/comma and it's near the end, it's decimal.
-    # But for simplicity, we treat both as possible decimals if smaller than 1000.
     s = s.replace(",", ".")
     
     try:

@@ -216,8 +216,8 @@ class FacebookReelScraper(FacebookBaseScraper):
                     data.engagement_texts = engagementTexts;
                     
                     // Comprehensive View Count search
-                    const fullText = document.body.innerText;
-                    const viewMatches = fullText.match(/(\d[\d.,\s]*[KMkm]?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    const fullText = mainContainer.innerText || "";
+                    const viewMatches = fullText.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
                     if (viewMatches) {
                         data.view_candidates = viewMatches;
                     }
