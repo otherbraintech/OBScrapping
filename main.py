@@ -136,11 +136,13 @@ async def run_scraper(
             "status": result.get("status"),
             "error": result.get("error"),
             "content_type": scraped_data.get("content_type", "unknown"),
-            "reactions": scraped_data.get("reactions_count", 0),
-            "comments": scraped_data.get("comments_count", 0),
-            "shares": scraped_data.get("shares_count", 0),
-            "views": scraped_data.get("views_count", 0),
-            "version": scraped_data.get("version", "1.0.8-fixed"),
+            "metrics": {
+                "reactions": scraped_data.get("reactions_count", 0),
+                "comments": scraped_data.get("comments_count", 0),
+                "shares": scraped_data.get("shares_count", 0),
+                "views": scraped_data.get("views_count", 0),
+            },
+            "version": "1.0.9-fixed",
             "_debug": scraped_data.get("_debug", {})
         }
 
@@ -185,13 +187,14 @@ async def run_scraper(
                     db_result = DBScrapeResult(
                         id=str(uuid.uuid4()),
                         content_type=clean_result.get("content_type"),
-                        reactions=clean_result.get("reactions"),
-                        comments=clean_result.get("comments"),
-                        shares=clean_result.get("shares"),
-                        views=clean_result.get("views"),
+                        reactions=clean_result.get("metrics", {}).get("reactions", 0),
+                        comments=clean_result.get("metrics", {}).get("comments", 0),
+                        shares=clean_result.get("metrics", {}).get("shares", 0),
+                        views=clean_result.get("metrics", {}).get("views", 0),
                         error=clean_result.get("error"),
                         scraped_at=datetime.fromisoformat(str(result.get("scraped_at"))),
                         raw_data=persistence_data,
+                        full_html=persistence_data.get("_debug", {}).get("full_html"),
                         request_id=db_request.id
                     )
                     
@@ -210,7 +213,7 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-VERSION = "1.0.8-fixed"
+VERSION = "1.0.9-fixed"
 app = FastAPI(title="Modular Social Scraper API", version=VERSION)
 
 @app.get("/")

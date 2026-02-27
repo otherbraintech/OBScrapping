@@ -69,14 +69,16 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
         return None
     text = _normalize_text(text)
     patterns = [
-        r"([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))\s*(?:de\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.)",
-        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?):\s*(?:de\s+)?([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))",
-        r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:de\s+)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
-        r"([\d.,]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        # Pattern 1: "1.2K views" or "7 241 vues"
+        r"([\d][\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?))\s*(?:de\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.|lectures?|visionnages?|replays?|visionnements?|bises?)",
+        # Pattern 2: "Views : 1 200" or "Vues: 1.2K" (handles space before colon)
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|replays?|visionnements?|bises?)\s*:\s*(?:de\s+)?([\d][\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)",
+        r"([\d.,\s]+\s*[KMkm]?)\s*mil\s*(?:de\s+)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d.,\s]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         # Relaxed pattern for "N vues" or "N views" in HTML/JSON attributes
-        r"([\d][\d\s.,]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d][\d\s.,]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|vistas|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)",
         # Very relaxed catch-all for anything that looks like "Number Vues" or "Number Plays"
-        r"([\d.,\s]+[KMkm]?)\s*(?:vues?|views?|plays?|reprod\.)",
+        r"([\d][\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -127,7 +129,8 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
         s = s[:-1]
     
     # Handle localized separators
-    s = s.replace(",", ".")
+    # French often uses spaces as thousand separators (e.g., "7 241")
+    s = s.replace(",", ".").replace(" ", "")
     
     try:
         # If there are multiple dots now (from 1.234.567), keep only the last one for decimal
@@ -230,9 +233,9 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
 
     # Look for views/plays count text patterns
     views_patterns = [
-        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?)<',
-        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualisatio?ns?)"',
-        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.)[^"]*"',
+        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|visionnements?)<',
+        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualisatio?ns?|lectures?|visionnages?|visionnements?)"',
+        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.|lectures?|visionnages?|visionnements?)[^"]*"',
     ]
     for pat in views_patterns:
         m = re.search(pat, html, re.IGNORECASE)

@@ -94,7 +94,7 @@ class FacebookReelScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "post_type": "video",  # Reels are always videos
-            "version": "1.0.8-fixed",
+            "version": "1.0.9-fixed",
             "_debug": {}
         }
 
@@ -255,7 +255,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     data.engagement_texts = [...new Set(allInfo)];
                     // Comprehensive View Count search - Search whole page but filter noise
                     const searchSource = document.body.innerText || "";
-                    const viewMatches = searchSource.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    const viewMatches = searchSource.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)/gi);
                     if (viewMatches) {
                         // Filter out matches that belong to "Suggested" or "Up Next" sections
                         const filteredMatches = viewMatches.filter(m => {
@@ -422,9 +422,9 @@ class FacebookReelScraper(FacebookBaseScraper):
             # If metrics are low or zero, scan the ENTIRE HTML for patterns
             if page_html:
                 current_views_norm = _normalize_count(str(scraped_data.get("views", "0"))) or 0
-                if current_views_norm < 10000:
-                    v_pats = [r'([\d.,]+\s*(?:M|millions?|millón|mill|mil|mille))\s*(?:de\s+)?(?:vues?|views?|visualizaciones|repro)', 
-                              r'(?:views?|vues?|visualizaciones|repro):\s*[^\d]*([\d.,]+\s*(?:M|millions?|millón|mill|mil|mille))']
+                if current_views_norm < 1:
+                    v_pats = [r'([\d.,\s]+\s*(?:M|millions?|millón|mill|mil|mille|lectures?|visionnages?|replays?|bises?))\s*(?:de\s+)?(?:vues?|views?|visualizaciones|repro|lectures?|visionnages?|replays?|bises?)', 
+                              r'(?:views?|vues?|visualizaciones|repro|lectures?|visionnages?|replays?|bises?):\s*[^\d]*([\d.,\s]+\s*(?:M|millions?|millón|mill|mil|mille|lectures?|visionnages?|replays?|bises?)?)']
                     for pat in v_pats:
                         for m in re.finditer(pat, page_html, re.IGNORECASE):
                             v = _normalize_count(m.group(1)); 
@@ -622,7 +622,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                             
                             # If visibility fails but it's mobile, try a specific scan for common mobile view class
                             if "m.facebook" in f_url:
-                                m_views = re.search(r'([\d.,\s]+[KMkm]?)\s*(?:views|vues|reproducciones)', new_html, re.I)
+                                m_views = re.search(r'([\d.,\s]+[KMkm]?)\s*(?:views|vues|reproducciones|lectures|visionnages|replays|bises)', new_html, re.I)
                                 if m_views:
                                     v_str = m_views.group(1).strip()
                                     v_norm = _normalize_count(v_str)
@@ -673,7 +673,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         "total_reaction_count": r'"total_reaction_count"\s*:\s*(\d+)',
                         "feedback_count": r'"feedback"\s*:\s*\{[^}]{0,200}',
                         "commentaire_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:commentaires?|comments?)',
-                        "vue_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?)',
+                        "vue_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?|replays?|bises?)',
                     }
                     scan_results = {}
                     for label, pat in scan_patterns.items():

@@ -68,6 +68,7 @@ class ScrapeResult(Base):
     error = Column(String, nullable=True)
     scraped_at = Column(DateTime, nullable=True)
     raw_data = Column(JSON, nullable=True)
+    full_html = Column(Text, nullable=True)
     request_id = Column(String, ForeignKey("scrape_requests.id"), unique=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
