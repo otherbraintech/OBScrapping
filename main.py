@@ -140,7 +140,7 @@ async def run_scraper(
             "comments": scraped_data.get("comments_count", 0),
             "shares": scraped_data.get("shares_count", 0),
             "views": scraped_data.get("views_count", 0),
-            "version": scraped_data.get("version", "1.0.7-fixed"),
+            "version": scraped_data.get("version", "1.0.8-fixed"),
             "_debug": scraped_data.get("_debug", {})
         }
 
@@ -210,7 +210,7 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-VERSION = "1.0.7-fixed"
+VERSION = "1.0.8-fixed"
 app = FastAPI(title="Modular Social Scraper API", version=VERSION)
 
 @app.get("/")

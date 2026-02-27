@@ -49,6 +49,8 @@ class FacebookPostScraper(FacebookBaseScraper):
             "task_id": self.task_id,
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
+            "version": "1.0.8-fixed",
+            "_debug": {}
         }
 
         if not self.page:

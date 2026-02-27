@@ -94,7 +94,8 @@ class FacebookReelScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "post_type": "video",  # Reels are always videos
-            "version": "1.0.7-fixed"
+            "version": "1.0.8-fixed",
+            "_debug": {}
         }
 
         if not self.page:
@@ -641,7 +642,8 @@ class FacebookReelScraper(FacebookBaseScraper):
 
             # ---- DEBUG BLOCK (always included — remove once stable) ----
             try:
-                debug_info: dict = {
+                debug_info: dict = scraped_data.get("_debug", {})
+                debug_info.update({
                     "final_url": self.page.url if self.page else url,
                     "html_length": len(page_html) if page_html else 0,
                     "full_html": page_html,
@@ -653,7 +655,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         else "mp4_html_scan" if scraped_data.get("video_url")
                         else "none"
                     ),
-                }
+                })
 
                 # -- Diagnostic: scan HTML for engagement-related JSON keys --
                 if page_html:
