@@ -18,6 +18,7 @@ from .utils import (
     _deduplicate_fb_images,
     _normalize_count,
 )
+from .ai_utils import extract_metrics_with_ai
 
 OG_TAGS = [
     "og:title", "og:description", "og:image", "og:url",
@@ -41,6 +42,47 @@ class FacebookReelScraper(FacebookBaseScraper):
         except Exception:
             pass
 
+    def _extract_video_id(self, scraped_data: Dict[str, Any], html: str) -> Optional[str]:
+        """Extract a stable numeric video ID from available sources."""
+        # 1. From og:url (e.g. /reel/123/ or /videos/slug/123/)
+        og_url = scraped_data.get("og_url", "")
+        if og_url:
+            # Look for 10+ digits at the end or after a common prefix
+            m = re.search(r'/(?:reel|videos|video|watch|v)/(?:[^/]+/)*(\d{10,})', og_url)
+            if m: return m.group(1)
+            # Try matching just the digits at the end
+            m_end = re.search(r'/(\d{10,})/?$', og_url)
+            if m_end: return m_end.group(1)
+
+        # 2. From requested_url
+        req_url = scraped_data.get("requested_url", "")
+        if req_url:
+            m = re.search(r'/(?:reel|videos|video|watch|v)/(?:[^/]+/)*(\d{10,})', req_url)
+            if m: return m.group(1)
+            m_end = re.search(r'/(\d{10,})/?$', req_url)
+            if m_end: return m_end.group(1)
+
+        # 3. From HTML (e.g. "top_level_post_id":"123", "videoID":"123", etc.)
+        patterns = [
+            r'"top_level_post_id"\s*:\s*"(\d+)"', 
+            r'"videoID"\s*:\s*"(\d+)"', 
+            r'"itemID"\s*:\s*"(\d+)"',
+            r'\bfbid=(\d+)\b',
+            r'"ent_id"\s*:\s*"(\d+)"',
+            r'"fbid"\s*:\s*"(\d+)"',
+            # Specific pattern for the android intent URL often found in head
+            r' Uzpf[a-zA-Z0-9]+:VK:(\d+)' 
+        ]
+        for pat in patterns:
+            m = re.search(pat, html)
+            if m: return m.group(1)
+        
+        # 4. Fallback search for ANY occurrence of /reel/ID or /videos/ID
+        m_fallback = re.search(r'/(?:reel|videos|video|v)/(\d{10,})', html)
+        if m_fallback: return m_fallback.group(1)
+        
+        return None
+
     async def run(self, url: str, **kwargs) -> Dict[str, Any]:
         self.logger.info(f"Running FacebookReelScraper for {url}")
 
@@ -51,7 +93,8 @@ class FacebookReelScraper(FacebookBaseScraper):
             "task_id": self.task_id,
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
-            "post_type": "video"  # Reels are always videos
+            "post_type": "video",  # Reels are always videos
+            "version": "1.0.7-fixed"
         }
 
         if not self.page:
@@ -188,40 +231,48 @@ class FacebookReelScraper(FacebookBaseScraper):
                 if v: scraped_data["views"] = v
 
             # ---- LAYER 3: JS EVALUATION ----
-            self.logger.info("Running JS extraction...")
             try:
-                js_data = await self.page.evaluate("""() => {
+                js_data = await self.page.evaluate(r"""() => {
                     const data = {};
-                    const mainContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
-                        || document.querySelector('div[role="main"]')
-                        || document.querySelector('div[role="article"]')
-                        || document;
+                    // Start with restricted container but allow fallback to body for metrics
+                    const playerContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
+                        || document.querySelector('div[role="main"]');
+                    const mainContainer = playerContainer || document.body;
 
-                    // Aria labels
-                    const ariaLabels = [];
-                    mainContainer.querySelectorAll('[aria-label]').forEach(el => {
-                        const label = el.getAttribute('aria-label');
-                        if (label) ariaLabels.push(label);
-                    });
-                    data.aria_labels = ariaLabels;
-
-                    // Engagement texts from spans with numbers
-                    const engagementTexts = [];
-                    mainContainer.querySelectorAll('span').forEach(span => {
-                        const text = span.innerText ? span.innerText.trim() : '';
-                        if (text && text.length < 150 && /\\d/.test(text)) {
-                            engagementTexts.push(text);
+                    // Recursive text and aria collection
+                    const allInfo = [];
+                    const walk = (node) => {
+                        if (node.nodeType === 1) { // Element
+                            const aria = node.getAttribute('aria-label');
+                            if (aria && aria.length < 150) allInfo.push(aria);
+                            const text = node.innerText;
+                            if (text && text.length < 150) allInfo.push(text);
+                            node.childNodes.forEach(walk);
                         }
-                    });
-                    data.engagement_texts = engagementTexts;
-                    
-                    // Comprehensive View Count search - Prioritize counts with units
-                    const fullText = mainContainer.innerText || "";
-                    const viewMatches = fullText.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    };
+                    walk(mainContainer);
+                    data.engagement_texts = [...new Set(allInfo)];
+                    // Comprehensive View Count search - Search whole page but filter noise
+                    const searchSource = document.body.innerText || "";
+                    const viewMatches = searchSource.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
                     if (viewMatches) {
-                        // Sort by length to pick "17 millones" over "1.1K" if both exist in container
-                        viewMatches.sort((a, b) => b.length - a.length);
-                        data.view_candidates = viewMatches;
+                        // Filter out matches that belong to "Suggested" or "Up Next" sections
+                        const filteredMatches = viewMatches.filter(m => {
+                            const low = m.toLowerCase();
+                            // If it's a very large number, it's likely our video
+                            if (low.includes('million') || low.includes('millón')) return true;
+                            return true; // For now keep all, sort later
+                        });
+                        // Sort by magnitude: M > K > large numbers
+                        filteredMatches.sort((a, b) => {
+                            const valA = a.toLowerCase();
+                            const valB = b.toLowerCase();
+                            if ((valA.includes('m') || valA.includes('mill')) && !(valB.includes('m') || valB.includes('mill'))) return -1;
+                            if (!(valA.includes('m') || valA.includes('mill')) && (valB.includes('m') || valB.includes('mill'))) return 1;
+                            return b.length - a.length;
+                        });
+                        data.view_candidates = filteredMatches;
+                    data._raw_search_source = searchSource.substring(0, 10000); // Sample noise
                     }
 
                     // Video detection
@@ -366,6 +417,27 @@ class FacebookReelScraper(FacebookBaseScraper):
                 except Exception as e:
                     self.logger.warning(f"Visible text extraction error: {e}")
 
+            # ---- LAYER 4c: GLOBAL Engagement SCAN (Python Last Resort) ----
+            # If metrics are low or zero, scan the ENTIRE HTML for patterns
+            if page_html:
+                current_views_norm = _normalize_count(str(scraped_data.get("views", "0"))) or 0
+                if current_views_norm < 10000:
+                    v_pats = [r'([\d.,]+\s*(?:M|millions?|millón|mill|mil|mille))\s*(?:de\s+)?(?:vues?|views?|visualizaciones|repro)', 
+                              r'(?:views?|vues?|visualizaciones|repro):\s*[^\d]*([\d.,]+\s*(?:M|millions?|millón|mill|mil|mille))']
+                    for pat in v_pats:
+                        for m in re.finditer(pat, page_html, re.IGNORECASE):
+                            v = _normalize_count(m.group(1)); 
+                            if v and v > current_views_norm: scraped_data["views"] = m.group(1); current_views_norm = v
+                
+                current_shares_norm = _normalize_count(str(scraped_data.get("shares", "0"))) or 0
+                if current_shares_norm < 1:
+                    s_pats = [r'([\d.,]+\s*[KMkm]?)\s*(?:de\s+)?(?:shares?|compartido|compartidos|partages?|repartages)', 
+                              r'(?:shares?|compartido|compartidos|partages?|repartages):\s*[^\d]*([\d.,]+\s*[KMkm]?)']
+                    for pat in s_pats:
+                        for m in re.finditer(pat, page_html, re.IGNORECASE):
+                            s = _normalize_count(m.group(1));
+                            if s and s > current_shares_norm: scraped_data["shares"] = m.group(1); current_shares_norm = s
+
             # ---- LAYER 5: HTML VIDEO URL SCAN ----
             # Extract .mp4 video URLs — clean HTML entities, filter to target video only
             video_url_found = scraped_data.get("video_url")
@@ -485,6 +557,88 @@ class FacebookReelScraper(FacebookBaseScraper):
                     if normalized is not None:
                         scraped_data[f"{field}_count"] = normalized
 
+            # ---- AI FALLBACK FOR MISSING METRICS ----
+            # If basic metrics are all 0 or missing, try AI
+            # Trigger AI fallback if basic metrics are missing or if views are 0
+            # Reels should almost always have views, so 0 is a strong signal for fallback.
+            if (scraped_data.get("reactions_count", 0) == 0 and 
+                scraped_data.get("comments_count", 0) == 0 and 
+                scraped_data.get("shares_count", 0) == 0) or \
+               (scraped_data.get("views_count", 0) == 0):
+                
+                self.logger.info("Triggering AI fallback for metric extraction...")
+                ai_results = await extract_metrics_with_ai(page_html or "", url)
+                if ai_results:
+                    for key, val in ai_results.items():
+                        if val and val > 0:
+                            # Only overwrite if AI found something positive and we had 0
+                            current_val = scraped_data.get(key, 0)
+                            if current_val == 0:
+                                scraped_data[key] = val
+                                scraped_data[f"{key}_ai_source"] = True
+                                self.logger.info(f"AI found {key}: {val}")
+                    
+                    # Store AI confidence in debug
+                    if "confidence" in ai_results:
+                        scraped_data["ai_confidence"] = ai_results["confidence"]
+
+            # ---- LAYER 6: POST INTERFACE FALLBACK (Redirection) ----
+            # If views are STILL 0, navigate to alternative interfaces which usually show them
+            if scraped_data.get("views_count", 0) == 0:
+                video_id = self._extract_video_id(scraped_data, page_html or "")
+                scraped_data["_debug"]["fallback_video_id"] = video_id
+                
+                if video_id:
+                    # Try these URLs in order
+                    fallback_urls = [
+                        f"https://www.facebook.com/watch/?v={video_id}",
+                        f"https://m.facebook.com/watch/?v={video_id}"
+                    ]
+                    
+                    for f_url in fallback_urls:
+                        self.logger.info(f"Views still 0. Falling back to Interface: {f_url}")
+                        scraped_data["_debug"]["fallback_triggered"] = True
+                        scraped_data["_debug"]["fallback_url_tried"] = f_url
+                        
+                        try:
+                            # Navigate to the fallback URL
+                            await self.page.goto(f_url, wait_until="domcontentloaded", timeout=20000)
+                            await asyncio.sleep(4.0) # Wait for metrics to load
+                            
+                            # Re-run visible text extraction on the new page
+                            new_html = await self.page.content()
+                            visible_post = _extract_engagement_from_visible_text(new_html)
+                            v_post = visible_post.get("views")
+                            
+                            if v_post:
+                                v_norm = _normalize_count(str(v_post))
+                                if v_norm and v_norm > 0:
+                                    scraped_data["views"] = str(v_post)
+                                    scraped_data["views_count"] = v_norm
+                                    scraped_data["views_fallback_source"] = f"interface_{'mobile' if 'm.facebook' in f_url else 'desktop'}"
+                                    self.logger.info(f"Fallback found views: {v_post}")
+                                    break # Found it!
+                            
+                            # If visibility fails but it's mobile, try a specific scan for common mobile view class
+                            if "m.facebook" in f_url:
+                                m_views = re.search(r'([\d.,\s]+[KMkm]?)\s*(?:views|vues|reproducciones)', new_html, re.I)
+                                if m_views:
+                                    v_str = m_views.group(1).strip()
+                                    v_norm = _normalize_count(v_str)
+                                    if v_norm and v_norm > 0:
+                                        scraped_data["views"] = v_str
+                                        scraped_data["views_count"] = v_norm
+                                        scraped_data["views_fallback_source"] = "mobile_regex_scan"
+                                        self.logger.info(f"Mobile regex scan found views: {v_str}")
+                                        break
+
+                        except Exception as fe:
+                            self.logger.warning(f"Fallback attempt failed for {f_url}: {fe}")
+                            continue # Try next URL
+
+                else:
+                    self.logger.warning("Could not extract video_id for fallback.")
+
             # ---- DEBUG BLOCK (always included — remove once stable) ----
             try:
                 debug_info: dict = {
@@ -590,7 +744,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                 "task_id", "requested_url", "final_url", "scraped_at", 
                 "content_type", "username", "caption", "post_date",
                 "reactions_count", "comments_count", "shares_count", "views_count",
-                "media", "_debug"
+                "media", "version", "_debug"
             ]
             
             # HARD CLEAN: Absolute whitelist of root keys

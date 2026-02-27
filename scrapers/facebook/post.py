@@ -168,14 +168,13 @@ class FacebookPostScraper(FacebookBaseScraper):
                     scraped_data["views"] = v
 
             # ---- LAYER 3: JS EVALUATION ----
-            self.logger.info("Running JS extraction...")
             try:
-                js_data = await self.page.evaluate("""() => {
+                js_data = await self.page.evaluate(r"""() => {
                     const data = {};
-                    const mainContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
-                        || document.querySelector('div[role="main"]')
-                        || document.querySelector('div[role="article"]')
-                        || document;
+                    // Start with restricted container but allow fallback to body for metrics
+                    const playerContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
+                        || document.querySelector('div[role="main"]');
+                    const mainContainer = playerContainer || document.body;
 
                     // Aria labels
                     const ariaLabels = [];
@@ -202,14 +201,28 @@ class FacebookPostScraper(FacebookBaseScraper):
                         if (text && text.length < 100) buttonTexts.push(text);
                     });
                     data.button_texts = buttonTexts;
-                    
-                    // Comprehensive View Count search - Prioritize counts with units
-                    const fullText = mainContainer.innerText || "";
-                    const viewMatches = fullText.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
+                    // Comprehensive View Count search - Search whole page but filter noise
+                    const searchSource = document.body.innerText || "";
+                    const viewMatches = searchSource.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)/gi);
                     if (viewMatches) {
-                        // Sort by length to pick "17 millones" over "1.1K" if both exist in container
-                        viewMatches.sort((a, b) => b.length - a.length);
-                        data.view_candidates = viewMatches;
+                        // Filter out matches that belong to "Suggested" or "Up Next" sections
+                        const filteredMatches = viewMatches.filter(m => {
+                            const low = m.toLowerCase();
+                            // If it's a very large number, it's likely our video
+                            if (low.includes('million') || low.includes('millón') || low.includes('mill')) return true;
+                            return true; // For now keep all, sort later
+                        });
+                        // Sort by magnitude: M > K > large numbers
+                        filteredMatches.sort((a, b) => {
+                            const valA = a.toLowerCase();
+                            const valB = b.toLowerCase();
+                            const magnitudeA = (valA.includes('m') || valA.includes('mill')) ? 3 : (valA.includes('k') ? 2 : 1);
+                            const magnitudeB = (valB.includes('m') || valB.includes('mill')) ? 3 : (valB.includes('k') ? 2 : 1);
+                            
+                            if (magnitudeA !== magnitudeB) return magnitudeB - magnitudeA;
+                            return b.length - a.length;
+                        });
+                        data.view_candidates = filteredMatches;
                     }
 
                     // Video detection

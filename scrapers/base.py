@@ -3,7 +3,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from playwright.async_api import BrowserContext, Page, async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 
 class BaseScraper(ABC):
     def __init__(self, task_id: str, logger: logging.Logger):
@@ -53,7 +53,7 @@ class BaseScraper(ABC):
         self.page = await self.context.new_page()
         
         # Apply stealth
-        await stealth_async(self.page)
+        await Stealth().apply_stealth_async(self.page)
         self.logger.info("Browser and page ready with stealth.")
 
     async def close(self):

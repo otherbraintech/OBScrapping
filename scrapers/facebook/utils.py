@@ -1,39 +1,58 @@
 import re
 import html as _html
+import unicodedata
 from typing import Optional, Any
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for reliable regex matching.
+    Converts non-breaking spaces, middots and other unicode to plain ASCII equivalents."""
+    if not text:
+        return text
+    # Decode HTML entities first
+    text = _html.unescape(text)
+    # Replace non-breaking space (\u00a0) and other whitespace variants with normal space
+    text = text.replace('\u00a0', ' ').replace('\u2009', ' ').replace('\u202f', ' ')
+    # Replace middot (·) with a space so patterns like '114 réactions · 17 partages' work
+    text = text.replace('\u00b7', ' ').replace('\u2022', ' ')
+    # Normalize unicode (NFC) and collapse multiple spaces
+    text = unicodedata.normalize('NFC', text)
+    text = re.sub(r'  +', ' ', text)
+    return text.strip()
 
 def _extract_shares_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+    text = _normalize_text(text)
     patterns = [
-        r"([\d.,]+\s*[KMkm]?)\s*(?:shares?|compartido|compartidos|veces compartido|partages?|condivisioni|compartilhamentos)",
-        r"([\d.,]+)\s*veces\s*compartido",
-        r"([\d.,]+\s*[KMkm]?)\s*fois\s*partagé",
-        r"([\d.,]+\s*[KMkm]?)\s*repartages",
+        r"([\d.,]+\s*[KMkm]?)\s*(?:shares?|compartido|compartidos|veces compartido|partages?|condivisioni|compartilhamentos|repartages?)",
+        r"([\d.,]+)\s*veces\s*(?:de\s*)?compartido",
+        r"([\d.,]+\s*[KMkm]?)\s*fois\s*(?:de\s*)?partagé",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return m.group(1)
+            return m.group(1).strip()
     return None
 
 def _extract_reactions_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+    text = _normalize_text(text)
     patterns = [
         r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+\s*[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
         r"(?:Todas las reacciones|Total reactions|Reacciones|Toutes les réactions):\s*([\d.,]+\s*[KMkm]?)",
-        r"([\d.,]+\s*[KMkm]?)\s*(?:reactions?|reaccione?s|réactions?|reações|reazioni|personas reaccionaron)",
+        r"([\d.,]+\s*[KMkm]?)\s*(?:reactions?|reaccione?s|r[eé]actions?|reações|reazioni|personas reaccionaron)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return m.group(1)
+            return m.group(1).strip()
     return None
 
 def _extract_comments_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+    text = _normalize_text(text)
     patterns = [
         r"view\s+all\s+([\d.,]+)\s*comments?",
         r"ver\s+los\s+([\d.,]+)\s*comentarios",
@@ -42,22 +61,25 @@ def _extract_comments_count_from_text(text: str) -> Optional[str]:
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return m.group(1)
+            return m.group(1).strip()
     return None
 
 def _extract_views_count_from_text(text: str) -> Optional[str]:
     if not text:
         return None
+    text = _normalize_text(text)
     patterns = [
-        r"([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
-        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million)?)",
-        r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))\s*(?:de\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*(?:de\s+)?([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))",
+        r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:de\s+)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
+        # Relaxed pattern for "N vues" or "N views" in HTML/JSON attributes
+        r"([\d][\d\s.,]*)\s*(?:views?|vues?|visualizaciones|reproducciones|vistas|reprod\.)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
-            return m.group(1)
+            return m.group(1).strip()
     return None
 
 def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -> Optional[int]:
@@ -81,9 +103,9 @@ def _normalize_count(value: Optional[str], text_context: Optional[str] = None) -
     mult = 1
     
     # Check for millions (longer words first)
-    if any(s.endswith(x) for x in ['millones', 'million', 'millón', 'millon']):
+    if any(s.endswith(x) for x in ['millones', 'million', 'millón', 'millon', 'mill']):
         mult = 1000000
-        for x in ['millones', 'million', 'millón', 'millon']:
+        for x in ['millones', 'million', 'millón', 'millon', 'mill']:
             if s.endswith(x):
                 s = s[:-len(x)]
                 break
@@ -162,6 +184,8 @@ def _extract_engagement_from_html(html: str) -> dict:
             r'"seen_by_count"\s*:\s*\{"count"\s*:\s*(\d+)',
             r'"video_play_count"\s*:\s*(\d+)',
             r'"i18n_video_view_count"\s*:\s*"([\d.,\s]*[KMkm]?)',
+            r'vue_count"\s*:\s*(\d+)',
+            r'playCount"\s*:\s*(\d+)',
         ],
     }
 
@@ -204,9 +228,9 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
 
     # Look for views/plays count text patterns
     views_patterns = [
-        r'>([\d.,\s]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)<',
-        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?)"',
-        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)"',
+        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)<',
+        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?)"',
+        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|reprod\.)[^"]*"',
     ]
     for pat in views_patterns:
         m = re.search(pat, html, re.IGNORECASE)

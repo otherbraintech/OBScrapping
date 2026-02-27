@@ -125,14 +125,13 @@ async def run_scraper(
         if scraper:
             await scraper.close()
             
-        # Clean webhook payload matching user requirement
+        # DIAGNOSTIC: Log data received from scraper
         scraped_data = result.get("data", {})
-        if not isinstance(scraped_data, dict):
-            scraped_data = {}
-            
+        task_logger.info(f"DEBUG - SCRAPER DATA KEYS: {list(scraped_data.keys())}")
+
         clean_result = {
             "task_id": result.get("task_id"),
-            "url": result.get("url"),
+            "url": scraped_data.get("requested_url") or result.get("url"),
             "scraped_at": result.get("scraped_at"),
             "status": result.get("status"),
             "error": result.get("error"),
@@ -141,6 +140,7 @@ async def run_scraper(
             "comments": scraped_data.get("comments_count", 0),
             "shares": scraped_data.get("shares_count", 0),
             "views": scraped_data.get("views_count", 0),
+            "version": scraped_data.get("version", "1.0.7-fixed"),
             "_debug": scraped_data.get("_debug", {})
         }
 
@@ -210,7 +210,18 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-app = FastAPI(title="Modular Social Scraper API")
+VERSION = "1.0.7-fixed"
+app = FastAPI(title="Modular Social Scraper API", version=VERSION)
+
+@app.get("/")
+async def root():
+    return {
+        "name": "OBScrapping Backend",
+        "version": VERSION,
+        "status": "running",
+        "server_time": datetime.utcnow().isoformat(),
+        "documentation": "/docs"
+    }
 
 @app.post("/scrape", response_model=ScrapeTaskResponse)
 async def scrape_endpoint(request: ScrapeRequest, background_tasks: BackgroundTasks):
