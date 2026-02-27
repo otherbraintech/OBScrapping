@@ -69,12 +69,14 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
         return None
     text = _normalize_text(text)
     patterns = [
-        r"([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))\s*(?:de\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.)",
-        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações):\s*(?:de\s+)?([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))",
+        r"([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))\s*(?:de\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.)",
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?):\s*(?:de\s+)?([\d.,]+\s*(?:[KMkm]|mil|mille|millones?|millón|million|mill))",
         r"([\d.,]+\s*[KMkm]?)\s*mil\s*(?:de\s+)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         # Relaxed pattern for "N vues" or "N views" in HTML/JSON attributes
-        r"([\d][\d\s.,]*)\s*(?:views?|vues?|visualizaciones|reproducciones|vistas|reprod\.)",
+        r"([\d][\d\s.,]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|vistas|reprod\.)",
+        # Very relaxed catch-all for anything that looks like "Number Vues" or "Number Plays"
+        r"([\d.,\s]+[KMkm]?)\s*(?:vues?|views?|plays?|reprod\.)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -228,9 +230,9 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
 
     # Look for views/plays count text patterns
     views_patterns = [
-        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações)<',
-        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?)"',
-        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|reprod\.)[^"]*"',
+        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?)<',
+        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualisatio?ns?)"',
+        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.)[^"]*"',
     ]
     for pat in views_patterns:
         m = re.search(pat, html, re.IGNORECASE)

@@ -77,7 +77,10 @@ async def extract_metrics_with_ai(html_content: str, url: str) -> Dict[str, Any]
             )
             
             if response.status_code != 200:
-                logger.error(f"OpenRouter API error: {response.status_code} - {response.text}")
+                if response.status_code == 401:
+                    logger.error(f"OpenRouter API error: 401 Unauthorized. PLEASE CHECK YOUR 'OPENROUTER_API_KEY' in .env. - {response.text}")
+                else:
+                    logger.error(f"OpenRouter API error: {response.status_code} - {response.text}")
                 return {}
             
             result = response.json()
