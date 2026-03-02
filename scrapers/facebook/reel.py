@@ -94,7 +94,7 @@ class FacebookReelScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "post_type": "video",  # Reels are always videos
-            "version": "1.0.9-fixed",
+            "version": "1.1.0",
             "_debug": {}
         }
 
@@ -155,7 +155,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     if found_val:
                         key = tag.replace(":", "_").replace(".", "_")
                         scraped_data[key] = found_val
-                        og_found = og_found + 1
+                        og_found = int(og_found) + 1
                 except Exception as e:
                     self.logger.warning(f"OG tag {tag} error: {e}")
 
@@ -390,9 +390,9 @@ class FacebookReelScraper(FacebookBaseScraper):
                 self.logger.warning(f"JS extraction error in Reels: {e}")
 
             # ---- LAYER 4: GraphQL JSON EMBEDDED IN HTML ----
-            if page_html:
+            if page_html_str:
                 try:
-                    embedded = _extract_engagement_from_html(page_html)
+                    embedded = _extract_engagement_from_html(page_html_str)
                     for k in ["reactions", "comments", "shares", "views"]:
                         val = embedded.get(k)
                         if val:
@@ -405,9 +405,9 @@ class FacebookReelScraper(FacebookBaseScraper):
                     self.logger.warning(f"GraphQL Reels extraction error: {e}")
 
             # ---- LAYER 4b: VISIBLE TEXT PATTERNS IN HTML ----
-            if page_html:
+            if page_html_str:
                 try:
-                    visible = _extract_engagement_from_visible_text(page_html)
+                    visible = _extract_engagement_from_visible_text(page_html_str)
                     for k in ["reactions", "comments", "shares", "views"]:
                         val = visible.get(k)
                         if val:
@@ -420,14 +420,14 @@ class FacebookReelScraper(FacebookBaseScraper):
 
             # ---- LAYER 4c: GLOBAL Engagement SCAN (Python Last Resort) ----
             # If metrics are low or zero, scan the ENTIRE HTML for patterns
-            if page_html:
+            if page_html_str:
                 current_views_norm = _normalize_count(str(scraped_data.get("views", "0"))) or 0
                 if current_views_norm < 10:  # If very low or 0, scan HTML
                     v_pats = [r'([\d.,\s]+\s*(?:M|millions?|millón|mill|mil|mille|lectures?|visionnages?|replays?|bises?))\s*(?:de\s+)?(?:vues?|views?|visualizaciones|repro|lectures?|visionnages?|replays?|bises?)', 
                               r'(?:views?|vues?|visualizaciones|repro|lectures?|visionnages?|replays?|bises?):\s*[^\d]*([\d.,\s]+\s*(?:M|millions?|millón|mill|mil|mille|lectures?|visionnages?|replays?|bises?)?)']
                     for pat in v_pats:
-                        for m in re.finditer(pat, page_html_str, re.IGNORECASE):
-                            v_raw = str(m.group(1))
+                        for m_view in re.finditer(pat, page_html_str, re.IGNORECASE):
+                            v_raw = str(m_view.group(1))
                             v = _normalize_count(v_raw) 
                             if v and v > current_views_norm: 
                                 scraped_data["views"] = v_raw
@@ -448,10 +448,10 @@ class FacebookReelScraper(FacebookBaseScraper):
             # ---- LAYER 5: HTML VIDEO URL SCAN ----
             # Extract .mp4 video URLs — clean HTML entities, filter to target video only
             video_url_found = scraped_data.get("video_url")
-            if not video_url_found and page_html:
+            if not video_url_found and page_html_str:
                 try:
                     # Extract target video ID from og_url (e.g. /videos/.../3597741687035400/)
-                    target_video_id = self._extract_video_id(scraped_data, page_html or "")
+                    target_video_id = self._extract_video_id(scraped_data, page_html_str or "")
                     if target_video_id:
                         scraped_data["target_video_id"] = target_video_id
                         self.logger.info(f"Target video_id: {target_video_id}")
@@ -465,7 +465,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     all_mp4: list = []
                     seen_mp4: set = set()
 
-                    for mp4m in mp4_pattern.finditer(page_html):
+                    for mp4m in mp4_pattern.finditer(page_html_str):
                         raw = mp4m.group(0)
 
                         # Clean: unescape JSON slashes
@@ -572,7 +572,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                (scraped_data.get("views_count", 0) == 0):
                 
                 self.logger.info("Triggering AI fallback for metric extraction...")
-                ai_results = await extract_metrics_with_ai(page_html or "", url)
+                ai_results = await extract_metrics_with_ai(page_html_str or "", url)
                 if ai_results:
                     for key, val in ai_results.items():
                         if val and val > 0:
@@ -673,8 +673,8 @@ class FacebookReelScraper(FacebookBaseScraper):
                 debug_info: dict = scraped_data.get("_debug", {})
                 debug_info.update({
                     "final_url": self.page.url if self.page else url,
-                    "html_length": len(page_html) if page_html else 0,
-                    "full_html": page_html,
+                    "html_length": len(page_html_str) if page_html_str else 0,
+                    "full_html": page_html_str,
                     "video_url_source": (
                         "og_video_secure_url" if scraped_data.get("og_video_secure_url")
                         else "og_video_url" if scraped_data.get("og_video_url")
@@ -770,7 +770,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                 "views": scraped_data.get("views")
             }
             final_data["_debug"] = debug_info
-            final_data["version"] = scraped_data.get("version", "1.0.9-fixed")
+            final_data["version"] = scraped_data.get("version", "1.1.0")
 
             # Standardize ROOT fields only
             ROOT_KEYS = [

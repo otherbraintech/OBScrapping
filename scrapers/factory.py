@@ -16,6 +16,9 @@ class ScraperFactory:
             # but NOT /reel/ID or /posts/ID
             is_individual = (
                 "/reel/" in url_low or 
+                "/share/r/" in url_low or
+                "/share/v/" in url_low or
+                "/share/p/" in url_low or
                 "/videos/" in url_low or 
                 "/posts/" in url_low or 
                 "/permalink/" in url_low or
