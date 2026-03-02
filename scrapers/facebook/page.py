@@ -90,9 +90,8 @@ class FacebookPageScraper(FacebookBaseScraper):
                         const m = href.match(/\/(?:reel|videos|posts|permalink)\/([^/?]+)/);
                         if (m) post.id = m[1];
                         
-                        // 2. Extract visible text (metrics usually appear here)
-                        const text = container.innerText || "";
-                        post.raw_text = text.substring(0, 500);
+                        // 2. Extract Visible Text (metrics/caption usually appear here)
+                        post.raw_text = container.innerText || "";
                         
                         // 3. Extract aria-labels
                         const ariaLabels = [];
@@ -101,7 +100,20 @@ class FacebookPageScraper(FacebookBaseScraper):
                         });
                         post.aria_labels = ariaLabels;
 
-                        // 4. Try to find thumbnail
+                        // 4. Try to find caption specifically (div with dir="auto")
+                        const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"]');
+                        if (captionEl) {
+                            post.caption = captionEl.innerText;
+                        }
+
+                        // 5. Try to find post date (span or a with relative/absolute date)
+                        // This usually appears in a link or a span inside the header
+                        const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"], a[href*="reel"] span > span');
+                        if (dateEl) {
+                          post.post_date_raw = dateEl.innerText;
+                        }
+
+                        // 6. Try to find thumbnail
                         const img = container.querySelector('img');
                         if (img) post.thumbnail = img.src;
 
@@ -122,6 +134,8 @@ class FacebookPageScraper(FacebookBaseScraper):
                     "url": p.get("url"),
                     "id": p.get("id"),
                     "thumbnail": p.get("thumbnail"),
+                    "caption": p.get("caption") or p.get("raw_text", "")[:200], # Fallback to first 200 chars
+                    "post_date_raw": p.get("post_date_raw"),
                     "reactions": _extract_reactions_count_from_text(combined_text),
                     "comments": _extract_comments_count_from_text(combined_text),
                     "shares": _extract_shares_count_from_text(combined_text),

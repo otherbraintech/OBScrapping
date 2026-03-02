@@ -21,39 +21,43 @@ class BaseScraper(ABC):
 
     async def setup_browser(self, proxy_server: Optional[str] = None, user_agent: Optional[str] = None):
         """Standard browser setup with stealth and optional proxy."""
-        self.logger.info("Setting up browser...")
+        self.logger.info(f"Setting up browser (Proxy: {'Yes' if proxy_server else 'No'})...")
         
-        self.playwright = await async_playwright().start()
-        
-        browser_args = [
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-accelerated-2d-canvas",
-            "--disable-gpu"
-        ]
-        
-        launch_kwargs = {
-            "headless": True,
-            "args": browser_args
-        }
-        if proxy_server:
-            launch_kwargs["proxy"] = {"server": proxy_server}
+        try:
+            self.playwright = await async_playwright().start()
             
-        self.browser = await self.playwright.chromium.launch(**launch_kwargs)
-        
-        context_kwargs = {}
-        if user_agent:
-            context_kwargs["user_agent"] = user_agent
-        else:
-            # Default UA
-            context_kwargs["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            browser_args = [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-accelerated-2d-canvas",
+                "--disable-gpu"
+            ]
             
-        self.context = await self.browser.new_context(**context_kwargs)
-        self.page = await self.context.new_page()
-        # Apply stealth
-        await stealth_async(self.page)
-        self.logger.info("Browser and page ready with stealth.")
+            launch_kwargs = {
+                "headless": True,
+                "args": browser_args
+            }
+            if proxy_server:
+                launch_kwargs["proxy"] = {"server": proxy_server}
+                
+            self.browser = await self.playwright.chromium.launch(**launch_kwargs)
+            
+            context_kwargs = {}
+            if user_agent:
+                context_kwargs["user_agent"] = user_agent
+            else:
+                context_kwargs["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                
+            self.context = await self.browser.new_context(**context_kwargs)
+            self.page = await self.context.new_page()
+            # Apply stealth
+            await stealth_async(self.page)
+            self.logger.info("Browser and page ready with stealth.")
+        except Exception as e:
+            self.logger.error(f"Browser setup failed: {e}")
+            await self.close()
+            raise e
 
     async def close(self):
         """Cleanup browser resources."""

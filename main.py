@@ -25,6 +25,18 @@ from scrapers.factory import ScraperFactory
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 FACEBOOK_COOKIES = os.getenv("FACEBOOK_COOKIES", "")
 
+# Proxy configuration from environment
+PROXY_HOST = os.getenv("PROXY_HOST")
+PROXY_PORT = os.getenv("PROXY_PORT")
+PROXY_USER = os.getenv("PROXY_USERNAME")
+PROXY_PASS = os.getenv("PROXY_PASSWORD")
+
+def get_proxy_url() -> Optional[str]:
+    if all([PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS]):
+        # Format: http://user:pass@host:port
+        return f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+    return None
+
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
@@ -99,8 +111,12 @@ async def run_scraper(
         scraper = scraper_cls(task_id, logger)
         
         # Setup and Run
-        # Note: You can pass generic proxy/UA settings from main config here
-        await scraper.setup_browser()
+        proxy = get_proxy_url()
+        try:
+            await scraper.setup_browser(proxy_server=proxy)
+        except Exception as proxy_err:
+            task_logger.warning(f"Initial browser setup failed (possibly proxy): {proxy_err}. Retrying without proxy.")
+            await scraper.setup_browser(proxy_server=None)
         
         # Execute the scraping logic
         data = await scraper.run(
@@ -151,6 +167,8 @@ async def run_scraper(
             "shares_count": s_data.get("shares_count", 0),
             "views_count": s_data.get("views_count", 0),
             "media": s_data.get("media", {}),
+            "posts": s_data.get("posts", []),
+            "total_posts_found": s_data.get("total_posts_found", 0),
             "version": s_data.get("version", VERSION),
             "_debug": s_data.get("_debug", {})
         }

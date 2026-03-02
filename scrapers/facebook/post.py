@@ -49,7 +49,7 @@ class FacebookPostScraper(FacebookBaseScraper):
             "task_id": self.task_id,
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
-            "version": "1.0.9-fixed",
+            "version": "1.1.0",
             "_debug": {}
         }
 
@@ -89,7 +89,7 @@ class FacebookPostScraper(FacebookBaseScraper):
             page_html = await self.page.content()
             scraped_data["diagnostic_html_length"] = len(page_html)
 
-            og_found = 0
+            og_found: int = 0
             for tag in OG_TAGS:
                 try:
                     patterns = [
@@ -620,16 +620,18 @@ class FacebookPostScraper(FacebookBaseScraper):
             }
             final_data["_debug"] = debug_info
 
-            # Standardize ROOT fields only
+            # Standardize ROOT_KEYS to match cleaned output in main.py
             ROOT_KEYS = [
                 "task_id", "requested_url", "final_url", "scraped_at", 
                 "content_type", "post_type", "username", "caption", "post_date",
                 "reactions_count", "comments_count", "shares_count", "views_count",
-                "media", "_debug"
+                "media", "version", "_debug"
             ]
             
             # HARD CLEAN: Absolute whitelist of root keys
-            strict_data = {k: final_data[k] for k in ROOT_KEYS if k in final_data and final_data[k] is not None}
+            strict_data = {k: final_data.get(k) for k in ROOT_KEYS if k in final_data or k == "version"}
+            if "version" not in strict_data:
+                strict_data["version"] = scraped_data.get("version", "1.1.0")
 
             self.logger.info(f"Extraction complete (Post). Metrics: R={strict_data.get('reactions_count')} C={strict_data.get('comments_count')} S={strict_data.get('shares_count')} V={strict_data.get('views_count')}")
 
