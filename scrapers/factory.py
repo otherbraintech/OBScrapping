@@ -3,6 +3,7 @@ from typing import Type
 from .base import BaseScraper
 from .facebook.reel import FacebookReelScraper
 from .facebook.post import FacebookPostScraper
+from .facebook.page import FacebookPageScraper
 
 class ScraperFactory:
     @staticmethod
@@ -10,16 +11,30 @@ class ScraperFactory:
         url_low = url.lower()
         
         if "facebook.com" in url_low or "fb.watch" in url_low:
-            # Handle share URLs like https://www.facebook.com/share/v/14VSX1MV1WL/
-            # For now, all share URLs are treated as reels. If a distinction is needed
-            # between shared posts and shared reels, more sophisticated parsing would be required.
-            if "/share/v/" in url_low or "/share/r/" in url_low or "/share/p/" in url_low:
-                # Assuming shared videos/reels are the primary use case for these share links.
-                # If a shared post needs to be handled differently, this logic would need refinement.
+            # Handle profile/page/feed URLs
+            # URLs like /PAGENAME/, /PAGENAME/reels, /PAGENAME/videos, /profile.php?id=...
+            # but NOT /reel/ID or /posts/ID
+            is_individual = (
+                "/reel/" in url_low or 
+                "/videos/" in url_low or 
+                "/posts/" in url_low or 
+                "/permalink/" in url_low or
+                "fb.watch/" in url_low or
+                "story.php" in url_low
+            )
+            
+            if not is_individual:
+                # Likely a page or profile
+                return FacebookPageScraper
+            
+            # Individual items
+            if "/share/v/" in url_low or "/share/r/" in url_low:
                 return FacebookReelScraper
             
-            if "/reel/" in url_low or "/reels/" in url_low:
+            if "/reel/" in url_low:
                 return FacebookReelScraper
+            
+            # Default to post for other individual links
             return FacebookPostScraper
             
         # Placeholders for future platforms

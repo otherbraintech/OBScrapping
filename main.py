@@ -127,30 +127,36 @@ async def run_scraper(
             
         # DIAGNOSTIC: Log data received from scraper
         scraped_data = result.get("data", {})
+        if not isinstance(scraped_data, dict):
+            task_logger.warning(f"scraped_data is not a dict, it's {type(scraped_data)}. Resetting to empty dict.")
+            scraped_data = {}
+            
         task_logger.info(f"DEBUG - SCRAPER DATA KEYS: {list(scraped_data.keys())}")
+
+        # Ensure scraped_data is a dict (linter safety)
+        s_data: Dict[str, Any] = scraped_data if isinstance(scraped_data, dict) else {}
 
         clean_result = {
             "task_id": result.get("task_id"),
-            "url": scraped_data.get("requested_url") or result.get("url"),
+            "url": s_data.get("requested_url") or result.get("url"),
             "scraped_at": result.get("scraped_at"),
             "status": result.get("status"),
             "error": result.get("error"),
-            "content_type": scraped_data.get("content_type", "unknown"),
-            "metrics": {
-                "reactions": scraped_data.get("reactions_count", 0),
-                "comments": scraped_data.get("comments_count", 0),
-                "shares": scraped_data.get("shares_count", 0),
-                "views": scraped_data.get("views_count", 0),
-            },
+            "content_type": s_data.get("content_type", "unknown"),
+            "username": s_data.get("username"),
+            "caption": s_data.get("caption"),
+            "post_date": s_data.get("post_date"),
+            "reactions_count": s_data.get("reactions_count", 0),
+            "comments_count": s_data.get("comments_count", 0),
+            "shares_count": s_data.get("shares_count", 0),
+            "views_count": s_data.get("views_count", 0),
+            "media": s_data.get("media", {}),
             "version": "1.0.9-fixed",
-            "_debug": scraped_data.get("_debug", {})
+            "_debug": s_data.get("_debug", {})
         }
 
         # Ensure rawData for DB contains EVERYTHING including _debug
-        # We explicitly ensure _debug is preserved as per user request
-        persistence_data = scraped_data 
-        if "_debug" in scraped_data:
-            persistence_data["_debug"] = scraped_data["_debug"]
+        persistence_data = s_data 
 
         # -- Debug Logging for User --
         task_logger.info(f"DEBUG - EXTRACTION RESULTS SUMMARY: {json.dumps(clean_result, indent=2)}")

@@ -132,10 +132,10 @@ class FacebookReelScraper(FacebookBaseScraper):
             except Exception:
                 head_html = ""
 
-            page_html = await self.page.content()
-            scraped_data["diagnostic_html_length"] = len(page_html)
+            page_html_str: str = str(await self.page.content())
+            scraped_data["diagnostic_html_length"] = len(page_html_str)
 
-            og_found = 0
+            og_found: int = 0
             for tag in OG_TAGS:
                 try:
                     patterns = [
@@ -155,7 +155,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     if found_val:
                         key = tag.replace(":", "_").replace(".", "_")
                         scraped_data[key] = found_val
-                        og_found += 1
+                        og_found = og_found + 1
                 except Exception as e:
                     self.logger.warning(f"OG tag {tag} error: {e}")
 
@@ -422,22 +422,28 @@ class FacebookReelScraper(FacebookBaseScraper):
             # If metrics are low or zero, scan the ENTIRE HTML for patterns
             if page_html:
                 current_views_norm = _normalize_count(str(scraped_data.get("views", "0"))) or 0
-                if current_views_norm < 1:
+                if current_views_norm < 10:  # If very low or 0, scan HTML
                     v_pats = [r'([\d.,\s]+\s*(?:M|millions?|millón|mill|mil|mille|lectures?|visionnages?|replays?|bises?))\s*(?:de\s+)?(?:vues?|views?|visualizaciones|repro|lectures?|visionnages?|replays?|bises?)', 
                               r'(?:views?|vues?|visualizaciones|repro|lectures?|visionnages?|replays?|bises?):\s*[^\d]*([\d.,\s]+\s*(?:M|millions?|millón|mill|mil|mille|lectures?|visionnages?|replays?|bises?)?)']
                     for pat in v_pats:
-                        for m in re.finditer(pat, page_html, re.IGNORECASE):
-                            v = _normalize_count(m.group(1)); 
-                            if v and v > current_views_norm: scraped_data["views"] = m.group(1); current_views_norm = v
+                        for m in re.finditer(pat, page_html_str, re.IGNORECASE):
+                            v_raw = str(m.group(1))
+                            v = _normalize_count(v_raw) 
+                            if v and v > current_views_norm: 
+                                scraped_data["views"] = v_raw
+                                current_views_norm = v
                 
                 current_shares_norm = _normalize_count(str(scraped_data.get("shares", "0"))) or 0
                 if current_shares_norm < 1:
                     s_pats = [r'([\d.,]+\s*[KMkm]?)\s*(?:de\s+)?(?:shares?|compartido|compartidos|partages?|repartages)', 
                               r'(?:shares?|compartido|compartidos|partages?|repartages):\s*[^\d]*([\d.,]+\s*[KMkm]?)']
                     for pat in s_pats:
-                        for m in re.finditer(pat, page_html, re.IGNORECASE):
-                            s = _normalize_count(m.group(1));
-                            if s and s > current_shares_norm: scraped_data["shares"] = m.group(1); current_shares_norm = s
+                        for m_share in re.finditer(pat, page_html_str, re.IGNORECASE):
+                            s_raw = str(m_share.group(1))
+                            s = _normalize_count(s_raw)
+                            if s and s > current_shares_norm: 
+                                scraped_data["shares"] = s_raw
+                                current_shares_norm = s
 
             # ---- LAYER 5: HTML VIDEO URL SCAN ----
             # Extract .mp4 video URLs — clean HTML entities, filter to target video only
@@ -445,11 +451,9 @@ class FacebookReelScraper(FacebookBaseScraper):
             if not video_url_found and page_html:
                 try:
                     # Extract target video ID from og_url (e.g. /videos/.../3597741687035400/)
-                    target_video_id: Optional[str] = None
-                    og_url = scraped_data.get("og_url", "")
-                    vid_id_match = re.search(r'/(\d{10,})', og_url)
-                    if vid_id_match:
-                        target_video_id = vid_id_match.group(1)
+                    target_video_id = self._extract_video_id(scraped_data, page_html or "")
+                    if target_video_id:
+                        scraped_data["target_video_id"] = target_video_id
                         self.logger.info(f"Target video_id: {target_video_id}")
 
                     # Find all .mp4 URLs (both clean and DASH-manifest encoded)
@@ -544,7 +548,7 @@ class FacebookReelScraper(FacebookBaseScraper):
 
                         all_mp4.sort(key=quality_score, reverse=True)
                         scraped_data["video_url"] = all_mp4[0]
-                        scraped_data["video_url_all"] = all_mp4[:5]  # max 5 versions
+                        scraped_data["video_url_all"] = list(all_mp4[:5])  # max 5 versions
                         self.logger.info(f"Best video_url (score={quality_score(all_mp4[0])}): {all_mp4[0][:80]}...")
 
                 except Exception as e:
@@ -584,16 +588,24 @@ class FacebookReelScraper(FacebookBaseScraper):
                         scraped_data["ai_confidence"] = ai_results["confidence"]
 
             # ---- LAYER 6: POST INTERFACE FALLBACK (Redirection) ----
-            # If views are STILL 0, navigate to alternative interfaces which usually show them
-            if scraped_data.get("views_count", 0) == 0:
-                video_id = self._extract_video_id(scraped_data, page_html or "")
+            # If views are STILL 0, OR if they look rounded (contain K or M), navigate to alternative 
+            # interfaces like mbasic which usually show the EXACT count.
+            has_precise_views = False
+            v_val = str(scraped_data.get("views", ""))
+            if v_val and not any(k in v_val.lower() for k in ['k', 'm', 'mil', 'mill']):
+                has_precise_views = True
+
+            if scraped_data.get("views_count", 0) == 0 or not has_precise_views:
+                video_id = self._extract_video_id(scraped_data, page_html_str)
                 scraped_data["_debug"]["fallback_video_id"] = video_id
                 
                 if video_id:
                     # Try these URLs in order
                     fallback_urls = [
                         f"https://www.facebook.com/watch/?v={video_id}",
-                        f"https://m.facebook.com/watch/?v={video_id}"
+                        f"https://m.facebook.com/watch/?v={video_id}",
+                        f"https://mbasic.facebook.com/watch/?v={video_id}",
+                        f"https://www.facebook.com/{video_id}"
                     ]
                     
                     for f_url in fallback_urls:
@@ -603,11 +615,27 @@ class FacebookReelScraper(FacebookBaseScraper):
                         
                         try:
                             # Navigate to the fallback URL
+                            # For mbasic, we can use a shorter wait as it's very light
+                            wait_time = 2.0 if "mbasic" in f_url else 4.0
                             await self.page.goto(f_url, wait_until="domcontentloaded", timeout=20000)
-                            await asyncio.sleep(4.0) # Wait for metrics to load
+                            await asyncio.sleep(wait_time) 
                             
                             # Re-run visible text extraction on the new page
                             new_html = await self.page.content()
+                            
+                            # For mbasic, we can use a simpler regex as it's almost pure text
+                            if "mbasic.facebook.com" in f_url:
+                                m_views = re.search(r'([\d.,\s]+[KMkm]?)\s*(?:reproducciones|lectures|views|vues|visionnages|replays|vistas|visualizaciones)', new_html, re.I)
+                                if m_views:
+                                    v_str = m_views.group(1).strip()
+                                    v_norm = _normalize_count(v_str)
+                                    if v_norm and v_norm > 0:
+                                        scraped_data["views"] = v_str
+                                        scraped_data["views_count"] = v_norm
+                                        scraped_data["views_fallback_source"] = "mbasic_regex"
+                                        self.logger.info(f"mbasic fallback found views: {v_str}")
+                                        break
+
                             visible_post = _extract_engagement_from_visible_text(new_html)
                             v_post = visible_post.get("views")
                             
@@ -658,38 +686,39 @@ class FacebookReelScraper(FacebookBaseScraper):
                 })
 
                 # -- Diagnostic: scan HTML for engagement-related JSON keys --
-                if page_html:
+                if page_html_str:
                     import re as _re
                     scan_patterns = {
                         "comment_count": r'"comment_count"\s*:\s*(\{[^}]{0,80}\}|\d+)',
                         "total_comment_count": r'"total_comment_count"\s*:\s*(\d+)',
                         "comments_total": r'"comments"\s*:\s*\{"total_count"\s*:\s*(\d+)',
                         "play_count": r'"play_count"\s*:\s*(\d+)',
-                        "video_view_count": r'"video_view_count"\s*:\s*(\d+)',
-                        "view_count": r'"view_count"\s*:\s*(\d+)',
-                        "seen_by_count": r'"seen_by_count"\s*:\s*(\{[^}]{0,80}\}|\d+)',
-                        "video_play_count": r'"video_play_count"\s*:\s*(\d+)',
+                        "video_view_count": r'"video_view_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+                        "view_count": r'"view_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+                        "seen_by_count": r'"seen_by_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+                        "video_play_count": r'"video_play_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
                         "reaction_count": r'"reaction_count"\s*:\s*\{"count"\s*:\s*(\d+)',
                         "total_reaction_count": r'"total_reaction_count"\s*:\s*(\d+)',
                         "feedback_count": r'"feedback"\s*:\s*\{[^}]{0,200}',
                         "commentaire_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:commentaires?|comments?)',
-                        "vue_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?|replays?|bises?)',
+                        "vue_visible": r'(\d[\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?|replays?|bises?|lectures?|visionnages?|visionnements?)',
                     }
                     scan_results = {}
-                    for label, pat in scan_patterns.items():
-                        matches = _re.findall(pat, page_html[:500000])  # scan first 500KB
-                        if matches:
-                            scan_results[label] = matches[:3]  # max 3 matches per pattern
+                    for label, pat_scan in scan_patterns.items():
+                        matches_scan = _re.findall(pat_scan, page_html_str[:500000])  # scan first 500KB
+                        if matches_scan:
+                            scan_results[label] = list(matches_scan[:3])  # max 3 matches per pattern
                     debug_info["html_engagement_scan"] = scan_results if scan_results else "no_matches"
                 
                 # Focused HTML snippet for troubleshooting
-                if page_html:
+                if page_html_str:
                     # Find a relevant part of the DOM
-                    marker = page_html.find('role="main"')
-                    if marker == -1: marker = page_html.find('role="article"')
+                    content_str: str = page_html_str
+                    marker = content_str.find('role="main"')
+                    if marker == -1: marker = content_str.find('role="article"')
                     if marker == -1: marker = 0
-                    debug_info["html_snippet"] = page_html[marker : marker + 5000]
-                    debug_info["full_html"] = page_html
+                    debug_info["html_snippet"] = content_str[marker : marker + 5000]
+                    debug_info["full_html"] = content_str
 
                 scraped_data["_debug"] = debug_info
             except Exception as de:
@@ -733,6 +762,7 @@ class FacebookReelScraper(FacebookBaseScraper):
 
             # Debug block
             debug_info = scraped_data.get("_debug", {})
+            debug_info["target_video_id"] = scraped_data.get("target_video_id")
             debug_info["metrics_raw"] = {
                 "reactions": scraped_data.get("reactions"),
                 "comments": scraped_data.get("comments"),
@@ -740,6 +770,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                 "views": scraped_data.get("views")
             }
             final_data["_debug"] = debug_info
+            final_data["version"] = scraped_data.get("version", "1.0.9-fixed")
 
             # Standardize ROOT fields only
             ROOT_KEYS = [

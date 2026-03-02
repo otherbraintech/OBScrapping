@@ -182,15 +182,15 @@ def _extract_engagement_from_html(html: str) -> dict:
             r'"i18n_share_count"\s*:\s*"(\d+)',
         ],
         "views": [
-            r'"play_count"\s*:\s*(\d+)',
-            r'"video_view_count"\s*:\s*(\d+)',
-            r'"view_count"\s*:\s*(\d+)',
+            r'"play_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+            r'"video_view_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+            r'"view_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
             r'"video_view_count_renderer"\s*:\s*\{"text"\s*:\s*\{"text"\s*:\s*"([\d.,\s]*[KMkm]?)',
-            r'"seen_by_count"\s*:\s*\{"count"\s*:\s*(\d+)',
-            r'"video_play_count"\s*:\s*(\d+)',
+            r'"seen_by_count"\s*:\s*\{"count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+            r'"video_play_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
             r'"i18n_video_view_count"\s*:\s*"([\d.,\s]*[KMkm]?)',
-            r'vue_count"\s*:\s*(\d+)',
-            r'playCount"\s*:\s*(\d+)',
+            r'vue_count"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
+            r'playCount"\s*:\s*"?([\d.,\s]+[KMkm]?)"?',
         ],
     }
 
@@ -233,9 +233,12 @@ def _extract_engagement_from_visible_text(html: str) -> dict:
 
     # Look for views/plays count text patterns
     views_patterns = [
-        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|visionnements?)<',
-        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualisatio?ns?|lectures?|visionnages?|visionnements?)"',
-        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.|lectures?|visionnages?|visionnements?)[^"]*"',
+        # Existing formats like "1,2K vues"
+        r'>([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|visionnements?|replays?|bises?)<',
+        r'aria-label="([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualisatio?ns?|lectures?|visionnages?|visionnements?|replays?|bises?)"',
+        r'"text"\s*:\s*"([\d.,\s]*[KMkm]?)\s*(?:de\s+)?(?:views?|vues?|visualizaciones|reproducciones|plays?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)[^"]*"',
+        # New "Keyword : Number" formats
+        r'(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|replays?|visionnements?|bises?)\s*:\s*([\d.,\s]*[KMkm]?)',
     ]
     for pat in views_patterns:
         m = re.search(pat, html, re.IGNORECASE)
