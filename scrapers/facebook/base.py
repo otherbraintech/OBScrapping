@@ -129,6 +129,9 @@ class FacebookBaseScraper(BaseScraper):
             "div[aria-label='Cerrar']",
             "[data-testid='login_wall_dismiss']",
             "div[role='dialog'] div[aria-label='Close']",
+            "div[role='dialog'] div[aria-label='Cerrar']",
+            "div[aria-label='Cerrar sesión']", 
+            "div.x92rt8a.x108n8is[role='dialog'] div[aria-label]" # Generic dialog close
         ]
         for sel in close_selectors:
             try:

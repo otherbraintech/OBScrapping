@@ -57,6 +57,13 @@ class FacebookPageScraper(FacebookBaseScraper):
             # ---- NAVIGATE ----
             self.logger.info(f"Navigating to Page: {url}")
             await self.page.goto(url, wait_until="networkidle", timeout=60000)
+            # Wait for main content or posts to appear
+            self.logger.info("Waiting for page content to load...")
+            try:
+                await self.page.wait_for_selector('div[role="main"], div[role="article"]', timeout=30000)
+            except Exception:
+                self.logger.warning("Main content selectors not found, proceeding with whatever is loaded...")
+            
             await asyncio.sleep(max(extra_wait, 3.0))
 
             # ---- CHECK FOR BLOCKS ----
@@ -71,26 +78,38 @@ class FacebookPageScraper(FacebookBaseScraper):
             page_html: str = await self.page.content()
             
             # This JS script finds all post containers and extracts their basic info
+            self.logger.info("Evaluating JavaScript to extract post containers...")
             posts = await self.page.evaluate(r"""() => {
                 const results = [];
-                // Find all potential post/reel containers
-                // 1. Grid Reels (aspect ratio ~0.56)
-                // 2. Feed Posts (role="article")
-                const containers = document.querySelectorAll('div[role="article"], div[data-pagelet="ProfileTimeline"] div[role="main"] > div > div > div, div[style*="aspect-ratio: 0.56"], div[style*="aspect-ratio:0.56"]');
+                // Broadcast logging to console for Playwright to catch if needed
+                console.log("Starting container search...");
+                
+                // Broad search for anything that looks like a post or reel container
+                const selectors = [
+                    'div[role="article"]',
+                    'div[data-pagelet="ProfileTimeline"] [role="main"] > div > div > div',
+                    'div[data-testid="post_container"]',
+                    'div[style*="aspect-ratio: 0.56"]',
+                    'div[style*="aspect-ratio:0.56"]',
+                    '.x1yzt60o.x1n2onr6.xh8yej3.x1ja2u2z' // Common classes for grid items
+                ];
+                
+                const containers = document.querySelectorAll(selectors.join(', '));
+                console.log(`Found ${containers.length} potential containers`);
                 
                 containers.forEach((container, index) => {
                     const post = { index };
                     
                     // 1. Try to find a link to the specific post/reel
-                    const linkEl = container.querySelector('a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"], a[href*="/permalink/"]');
+                    const linkEl = container.querySelector('a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"], a[href*="/permalink/"], a[href*="/story.php"]');
                     if (linkEl) {
                         const href = linkEl.href;
                         post.url = href;
                         // Extract ID from URL
-                        const m = href.match(/\/(?:reel|videos|posts|permalink)\/([^/?]+)/);
+                        const m = href.match(/\/(?:reel|videos|posts|permalink|story\.php)\/([^/?]+)/);
                         if (m) post.id = m[1];
                         
-                        // 2. Extract Visible Text (metrics/caption usually appear here)
+                        // 2. Extract Visible Text
                         post.raw_text = container.innerText || "";
                         
                         // 3. Extract aria-labels
@@ -101,14 +120,13 @@ class FacebookPageScraper(FacebookBaseScraper):
                         post.aria_labels = ariaLabels;
 
                         // 4. Try to find caption specifically (div with dir="auto")
-                        const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"]');
+                        const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"], .x1iorvi4.x17qzfe7.x6ikm8r.x1ot46pu');
                         if (captionEl) {
                             post.caption = captionEl.innerText;
                         }
 
-                        // 5. Try to find post date (span or a with relative/absolute date)
-                        // This usually appears in a link or a span inside the header
-                        const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"], a[href*="reel"] span > span');
+                        // 5. Try to find post date
+                        const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"] span, a[href*="reel"] span > span, span[data-ad-preview="time"]');
                         if (dateEl) {
                           post.post_date_raw = dateEl.innerText;
                         }
