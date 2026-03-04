@@ -115,17 +115,52 @@ class FacebookPageScraper(FacebookBaseScraper):
                     'div[data-testid="post_container"]',
                     'div[style*="aspect-ratio: 0.56"]',
                     'div[style*="aspect-ratio:0.56"]',
-                    '.x1yzt60o.x1n2onr6.xh8yej3.x1ja2u2z' // Common classes for grid items
+                    '.x1yzt60o.x1n2onr6.xh8yej3.x1ja2u2z', // Common classes for grid items
+                    'div > div > div > div > div > div > div > div > div > div > div[dir="auto"]', // Very deep generic
+                    'div[role="article"]', // Redundant but safe
+                    'div.x1y1zqc1' // Another common class
                 ];
+
+                // Alternative: Search for containers that HAVE a timestamp link
+                const allLinks = document.querySelectorAll('a[role="link"]');
+                const timeLinks = Array.from(allLinks).filter(a => {
+                    const aria = a.getAttribute('aria-label');
+                    return aria && /\d/.test(aria) && (
+                        /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(aria) ||
+                        /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(aria)
+                    );
+                });
+
+                console.log(`Found ${timeLinks.length} timestamp links`);
+
+                // Find unique parent containers for these time links that likely contain the whole post
+                const potentialContainers = new Set();
+                timeLinks.forEach(tl => {
+                    let parent = tl.parentElement;
+                    // Go up a few levels to find a common container
+                    for(let i=0; i<8; i++) {
+                        if(!parent) break;
+                        // On public pages, posts are often in a div with specific padding/margin or direct children of the feed
+                        if(parent.innerText && parent.innerText.length > 100) {
+                             potentialContainers.add(parent);
+                        }
+                        parent = parent.parentElement;
+                    }
+                });
+
+                const containers = Array.from(new Set([
+                    ...Array.from(document.querySelectorAll(selectors.join(', '))),
+                    ...Array.from(potentialContainers)
+                ]));
                 
-                const containers = document.querySelectorAll(selectors.join(', '));
-                console.log(`Found ${containers.length} potential containers`);
+                console.log(`Combined search found ${containers.length} potential containers`);
                 
                 containers.forEach((container, index) => {
                     const post = { index };
                     
                     // 1. Try to find a link to the specific post/reel
-                    const linkEl = container.querySelector('a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"], a[href*="/permalink/"], a[href*="/story.php"]');
+                    // More broad link search for any permanent link
+                    const linkEl = container.querySelector('a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"], a[href*="/permalink/"], a[href*="/story.php"], a[href*="fbid="], a[href*="/photo"]');
                     if (linkEl) {
                         const href = linkEl.href;
                         post.url = href;
@@ -197,6 +232,10 @@ class FacebookPageScraper(FacebookBaseScraper):
             scraped_data["posts"] = processed_posts
             scraped_data["total_posts_found"] = len(processed_posts)
 
+            if len(processed_posts) == 0:
+                self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug for analysis.")
+                scraped_data["_debug"]["full_html"] = await self.page.content()
+
             self.logger.info(f"Page extraction complete. Found {len(processed_posts)} items.")
 
             return {
@@ -206,4 +245,14 @@ class FacebookPageScraper(FacebookBaseScraper):
 
         except Exception as e:
             self.logger.error(f"FacebookPageScraper failed: {str(e)}", exc_info=True)
+            # DUMP HTML FOR ANALYSIS if it fails or returns 0
+            try:
+                html = await self.page.content()
+                from pathlib import Path
+                dump_path = Path("docs") / f"last_failed_scrape_{self.task_id}.html"
+                dump_path.parent.mkdir(exist_ok=True)
+                dump_path.write_text(html, encoding="utf-8")
+                self.logger.info(f"Raw HTML dumped to {dump_path}")
+            except:
+                pass
             return self.format_error(str(e))
