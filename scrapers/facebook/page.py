@@ -19,18 +19,42 @@ class FacebookPageScraper(FacebookBaseScraper):
     """
 
     async def _scroll_page(self, count=5):
-        """Scroll multiple times to load more posts."""
+        """Scroll multiple times to load more posts with safety for null body."""
         if not self.page:
             return
-        last_height = await self.page.evaluate("document.body.scrollHeight")
+        
+        # Helper to get the current scroll height safely
+        # Using document.scrollingElement as it is the most reliable modern way
+        get_height_js = "() => (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight"
+        
+        try:
+            last_height = await self.page.evaluate(get_height_js)
+        except Exception:
+            last_height = 0
+
         for i in range(count):
             self.logger.info(f"Scrolling ({i+1}/{count})...")
-            await self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(2.0)
-            new_height = await self.page.evaluate("document.body.scrollHeight")
-            if new_height == last_height:
+            try:
+                # Use window.scrollTo which is usually more reliable
+                scroll_to_js = "window.scrollTo(0, (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight)"
+                await self.page.evaluate(scroll_to_js)
+                
+                # Wait for content to potentially load
+                await asyncio.sleep(2.0)
+                
+                new_height = await self.page.evaluate(get_height_js)
+                if new_height == last_height or new_height == 0:
+                    # Try one more wait if we might be on a slow load
+                    await asyncio.sleep(1.0)
+                    new_height = await self.page.evaluate(get_height_js)
+                    if new_height == last_height:
+                        break
+                
+                last_height = new_height
+            except Exception as e:
+                self.logger.warning(f"Scroll step {i+1} failed: {e}")
+                # Don't break completely, try next scroll if just a timeout? No, probably a hard failure.
                 break
-            last_height = new_height
 
     async def run(self, url: str, **kwargs) -> Dict[str, Any]:
         self.logger.info(f"Running FacebookPageScraper for {url}")
@@ -43,7 +67,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.1.0",
+            "version": "1.1.1",
             "posts": []
         }
 

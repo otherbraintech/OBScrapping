@@ -151,10 +151,14 @@ async def run_scraper(
 
         # Ensure scraped_data is a dict (linter safety)
         s_data: Dict[str, Any] = scraped_data if isinstance(scraped_data, dict) else {}
+        
+        # Priority: result["url"] (initial) > s_data["requested_url"] (from scraper)
+        final_url = result.get("url") or s_data.get("requested_url") or ""
+        task_logger.info(f"Finalizing result for URL: {final_url}")
 
         clean_result = {
             "task_id": result.get("task_id"),
-            "url": s_data.get("requested_url") or result.get("url"),
+            "url": final_url,
             "scraped_at": result.get("scraped_at"),
             "status": result.get("status"),
             "error": result.get("error"),
@@ -237,7 +241,7 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-VERSION = "1.1.0"
+VERSION = "1.1.1"
 app = FastAPI(title="Modular Social Scraper API", version=VERSION)
 
 @app.get("/")

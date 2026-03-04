@@ -49,7 +49,7 @@ class FacebookPostScraper(FacebookBaseScraper):
             "task_id": self.task_id,
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
-            "version": "1.1.0",
+            "version": "1.1.1",
             "_debug": {}
         }
 
