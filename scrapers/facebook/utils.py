@@ -71,8 +71,8 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
     patterns = [
         # Pattern 1: "1.2K views" or "7 241 vues"
         r"([\d][\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?))\s*(?:de\s+)?(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|reprod\.|lectures?|visionnages?|replays?|visionnements?|bises?)",
-        # Pattern 2: "Views : 1 200" or "Vues: 1.2K" (handles space before colon)
-        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|replays?|visionnements?|bises?)\s*:\s*(?:de\s+)?([\d][\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)",
+        # Pattern 2: "Views : 1 200" or "Vues: 1.2K" (handles space before/after colon)
+        r"(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|visualisatio?ns?|lectures?|visionnages?|replays?|visionnements?|bises?)\s*[:：]\s*(?:de\s+)?([\d][\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)",
         r"([\d.,\s]+\s*[KMkm]?)\s*mil\s*(?:de\s+)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         r"([\d.,\s]+\s*[KMkm]?)\s*millones?\s*(?:de\s*)?(?:visualizaciones|reproducciones|vistas|reprod\.)",
         # Relaxed pattern for "N vues" or "N views" in HTML/JSON attributes

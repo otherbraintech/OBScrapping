@@ -158,8 +158,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                 console.log(`Combined search found ${containers.length} potential containers`);
                 
                 // Comprehensive View Count search - Search whole page but filter noise
-                const searchElement = document.body || document.documentElement || {innerText: ""};
-                const searchSource = searchElement.innerText || "";
+                const searchSource = (document.body || document.documentElement || {innerText: ""}).innerText || "";
                 
                 // Improved Regex to match both "Number views" and "Views: Number"
                 const viewRegex = /(?:(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?))|(?:(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)\s*:\s*(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|visionnements?|replays?|bises?)?))/gi;
@@ -209,15 +208,32 @@ class FacebookPageScraper(FacebookBaseScraper):
                     }
                 });
 
-                return results;
+                return {
+                    posts: results,
+                    view_matches: viewMatches || []
+                };
             }""")
 
             # ---- PROCESS EXTRACTED POSTS IN PYTHON ----
+            raw_result = posts # The evaluate now returns an object
+            extracted_posts = raw_result.get("posts", [])
+            page_view_matches = raw_result.get("view_matches", [])
+            
             processed_posts = []
-            for p in posts:
+            for p in extracted_posts:
                 # Use existing utility functions to parse metrics from gathered text
                 combined_text = (p.get("raw_text", "") + " " + " ".join(p.get("aria_labels", []))).lower()
                 
+                # Check for views in this specific post's text
+                views_val = _extract_views_count_from_text(combined_text)
+                
+                # If not found in post text, but we have global view matches, 
+                # this is a fallback for profiles where views are listed in a grid but not inside the post text
+                if not views_val and page_view_matches:
+                    # Very simple heuristic: if there's only one post and one view match, they probably belong together
+                    if len(extracted_posts) == 1 and len(page_view_matches) == 1:
+                        views_val = _extract_views_count_from_text(page_view_matches[0])
+
                 metrics = {
                     "url": p.get("url"),
                     "id": p.get("id"),
@@ -227,7 +243,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                     "reactions": _extract_reactions_count_from_text(combined_text),
                     "comments": _extract_comments_count_from_text(combined_text),
                     "shares": _extract_shares_count_from_text(combined_text),
-                    "views": _extract_views_count_from_text(combined_text),
+                    "views": views_val,
                 }
 
                 # Normalize counts
