@@ -68,7 +68,9 @@ class FacebookPageScraper(FacebookBaseScraper):
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
             "version": "1.1.1",
-            "posts": []
+            "posts": [],
+            "total_posts_found": 0,
+            "_debug": {}
         }
 
         if not self.page:
@@ -155,6 +157,15 @@ class FacebookPageScraper(FacebookBaseScraper):
                 
                 console.log(`Combined search found ${containers.length} potential containers`);
                 
+                // Comprehensive View Count search - Search whole page but filter noise
+                const searchElement = document.body || document.documentElement || {innerText: ""};
+                const searchSource = searchElement.innerText || "";
+                
+                // Improved Regex to match both "Number views" and "Views: Number"
+                const viewRegex = /(?:(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?))|(?:(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)\s*:\s*(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|visionnements?|replays?|bises?)?))/gi;
+                
+                const viewMatches = searchSource.match(viewRegex);
+
                 containers.forEach((container, index) => {
                     const post = { index };
                     

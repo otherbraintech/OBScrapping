@@ -243,6 +243,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     // Recursive text and aria collection
                     const allInfo = [];
                     const walk = (node) => {
+                        if (!node) return;
                         if (node.nodeType === 1) { // Element
                             const aria = node.getAttribute('aria-label');
                             if (aria && aria.length < 150) allInfo.push(aria);
@@ -253,9 +254,15 @@ class FacebookReelScraper(FacebookBaseScraper):
                     };
                     walk(mainContainer);
                     data.engagement_texts = [...new Set(allInfo)];
+                    
                     // Comprehensive View Count search - Search whole page but filter noise
-                    const searchSource = document.body.innerText || "";
-                    const viewMatches = searchSource.match(/(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)/gi);
+                    const searchElement = document.body || document.documentElement || {innerText: ""};
+                    const searchSource = searchElement.innerText || "";
+                    
+                    // Improved Regex to match both "Number views" and "Views: Number"
+                    const viewRegex = /(?:(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?))|(?:(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|replays?|visionnements?|bises?)\s*:\s*(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?))/gi;
+                    
+                    const viewMatches = searchSource.match(viewRegex);
                     if (viewMatches) {
                         // Filter out matches that belong to "Suggested" or "Up Next" sections
                         const filteredMatches = viewMatches.filter(m => {
