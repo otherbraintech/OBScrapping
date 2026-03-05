@@ -12,6 +12,7 @@ from .utils import (
     _extract_views_count_from_text,
     _extract_reactions_count_from_html,
     _extract_engagement_from_html,
+    _extract_engagement_from_visible_text,
     _extract_images_from_html,
     _deduplicate_fb_images,
     _normalize_count,
@@ -173,9 +174,12 @@ class FacebookPostScraper(FacebookBaseScraper):
             try:
                 js_data = await self.page.evaluate(r"""() => {
                     const data = {};
-                    // Start with restricted container but allow fallback to body for metrics
+                    // Improved container search
                     const playerContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
-                        || document.querySelector('div[role="main"]');
+                        || document.querySelector('div[role="main"]')
+                        || document.querySelector('div[role="article"]')
+                        || document.querySelector('div.x1y1zqc1');
+                    
                     const mainContainer = playerContainer || document.body;
 
                     // Aria labels

@@ -83,10 +83,17 @@ class FacebookPageScraper(FacebookBaseScraper):
             # ---- NAVIGATE ----
             self.logger.info(f"Navigating to Page: {url}")
             await self.page.goto(url, wait_until="networkidle", timeout=60000)
+            
+            # Additional wait for Reels/Videos tabs which are slower
+            is_reels = "/reels/" in url.lower() or "/videos/" in url.lower()
+            if is_reels:
+                self.logger.info("Detected Reels/Videos tab, waiting extra time for grid...")
+                await asyncio.sleep(5.0)
+
             # Wait for main content or posts to appear
             self.logger.info("Waiting for page content to load...")
             try:
-                await self.page.wait_for_selector('div[role="main"], div[role="article"]', timeout=30000)
+                await self.page.wait_for_selector('div[role="main"], div[role="article"], div.x1yzt60o', timeout=30000)
             except Exception:
                 self.logger.warning("Main content selectors not found, proceeding with whatever is loaded...")
             
@@ -107,102 +114,108 @@ class FacebookPageScraper(FacebookBaseScraper):
             self.logger.info("Evaluating JavaScript to extract post containers...")
             posts = await self.page.evaluate(r"""() => {
                 const results = [];
-                // Broadcast logging to console for Playwright to catch if needed
                 console.log("Starting container search...");
                 
-                // Broad search for anything that looks like a post or reel container
+                // 1. Broad search for container selectors (modern FB layouts)
                 const selectors = [
                     'div[role="article"]',
                     'div[data-pagelet="ProfileTimeline"] [role="main"] > div > div > div',
                     'div[data-testid="post_container"]',
-                    'div[style*="aspect-ratio: 0.56"]',
+                    'div[style*="aspect-ratio: 0.56"]', // Common for single Reels in grid
                     'div[style*="aspect-ratio:0.56"]',
-                    '.x1yzt60o.x1n2onr6.xh8yej3.x1ja2u2z', // Common classes for grid items
-                    'div > div > div > div > div > div > div > div > div > div > div[dir="auto"]', // Very deep generic
-                    'div[role="article"]', // Redundant but safe
-                    'div.x1y1zqc1' // Another common class
+                    'div.x1yzt60o.x1n2onr6.xh8yej3.x1ja2u2z', // Common grid classes
+                    'div.x78zum5.x1q0g3np.x1a2a7bu.x1qugh54', // Reels grid items
+                    'div.x1y1zqc1',
+                    'div.x1lliihq' // Very generic but useful in some layouts
                 ];
 
-                // Alternative: Search for containers that HAVE a timestamp link
-                const allLinks = document.querySelectorAll('a[role="link"]');
-                const timeLinks = Array.from(allLinks).filter(a => {
-                    const aria = a.getAttribute('aria-label');
-                    return aria && /\d/.test(aria) && (
-                        /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(aria) ||
-                        /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(aria)
-                    );
+                // 2. Build candidates list
+                const candidates = new Set();
+                selectors.forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => candidates.add(el));
                 });
 
-                console.log(`Found ${timeLinks.length} timestamp links`);
-
-                // Find unique parent containers for these time links that likely contain the whole post
-                const potentialContainers = new Set();
-                timeLinks.forEach(tl => {
-                    let parent = tl.parentElement;
-                    // Go up a few levels to find a common container
-                    for(let i=0; i<8; i++) {
-                        if(!parent) break;
-                        // On public pages, posts are often in a div with specific padding/margin or direct children of the feed
-                        if(parent.innerText && parent.innerText.length > 100) {
-                             potentialContainers.add(parent);
+                // 3. Fallback: Search for containers by looking for timestamp/permalink links
+                const allLinks = document.querySelectorAll('a[role="link"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"]');
+                allLinks.forEach(a => {
+                    const aria = a.getAttribute('aria-label') || '';
+                    const hasTime = /\d/.test(aria) && (
+                        /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(aria) ||
+                        /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(aria) ||
+                        a.innerText.includes(' ') && /\d/.test(a.innerText)
+                    );
+                    const isReel = a.href.includes('/reel/') || a.href.includes('/videos/');
+                    
+                    if (hasTime || isReel) {
+                        let parent = a.parentElement;
+                        for(let i=0; i<10; i++) {
+                            if(!parent) break;
+                            if(parent.innerText && parent.innerText.length > 50) {
+                                candidates.add(parent);
+                            }
+                            if(parent.getAttribute('role') === 'article') break;
+                            parent = parent.parentElement;
                         }
-                        parent = parent.parentElement;
                     }
                 });
 
-                const containers = Array.from(new Set([
-                    ...Array.from(document.querySelectorAll(selectors.join(', '))),
-                    ...Array.from(potentialContainers)
-                ]));
-                
-                console.log(`Combined search found ${containers.length} potential containers`);
-                
-                // Comprehensive View Count search - Search whole page but filter noise
-                const searchSource = (document.body || document.documentElement || {innerText: ""}).innerText || "";
-                
-                // Improved Regex to match both "Number views" and "Views: Number"
-                const viewRegex = /(?:(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|replays?|visionnements?|bises?)?)\s*(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?))|(?:(?:views?|visualizaciones|reproducciones|plays?|vistas|vues?|visualizzazioni|visualizações|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)\s*:\s*(\d[\d.,\s]*(?:[KMkm]|mil|mille|millones?|millón|million|mill|lectures?|visionnages?|visionnements?|replays?|bises?)?))/gi;
-                
-                const viewMatches = searchSource.match(viewRegex);
+                console.log(`Analyzing ${candidates.size} candidate containers`);
 
-                containers.forEach((container, index) => {
+                // Global views scan to help associate metrics
+                const globalText = document.body.innerText || "";
+                
+                Array.from(candidates).forEach((container, index) => {
+                    // Skip if container is nested inside another candidate we already processed? 
+                    // No, let's keep all for now and deduplicate by URL later.
+                    
                     const post = { index };
                     
-                    // 1. Try to find a link to the specific post/reel
-                    // More broad link search for any permanent link
-                    const linkEl = container.querySelector('a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"], a[href*="/permalink/"], a[href*="/story.php"], a[href*="fbid="], a[href*="/photo"]');
-                    if (linkEl) {
-                        const href = linkEl.href;
-                        post.url = href;
-                        // Extract ID from URL
-                        const m = href.match(/\/(?:reel|videos|posts|permalink|story\.php)\/([^/?]+)/);
+                    // 1. Link Extraction (URL)
+                    const linkEls = Array.from(container.querySelectorAll('a[href]'));
+                    const fbLink = linkEls.find(a => 
+                        a.href.includes('/reel/') || 
+                        a.href.includes('/videos/') || 
+                        a.href.includes('/posts/') || 
+                        a.href.includes('/permalink/') || 
+                        a.href.includes('/story.php') ||
+                        a.href.includes('fbid=') ||
+                        a.href.includes('/photo')
+                    );
+
+                    if (fbLink) {
+                        post.url = fbLink.href;
+                        const m = post.url.match(/\/(?:reel|videos|posts|permalink|story\.php|photo)\/([^/?]+)/) 
+                                || post.url.match(/fbid=([^&]+)/);
                         if (m) post.id = m[1];
                         
-                        // 2. Extract Visible Text
                         post.raw_text = container.innerText || "";
                         
-                        // 3. Extract aria-labels
                         const ariaLabels = [];
                         container.querySelectorAll('[aria-label]').forEach(el => {
                             ariaLabels.push(el.getAttribute('aria-label'));
                         });
                         post.aria_labels = ariaLabels;
 
-                        // 4. Try to find caption specifically (div with dir="auto")
+                        // Caption lookup
                         const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"], .x1iorvi4.x17qzfe7.x6ikm8r.x1ot46pu');
-                        if (captionEl) {
-                            post.caption = captionEl.innerText;
-                        }
+                        if (captionEl) post.caption = captionEl.innerText;
 
-                        // 5. Try to find post date
+                        // Date lookup
                         const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"] span, a[href*="reel"] span > span, span[data-ad-preview="time"]');
-                        if (dateEl) {
-                          post.post_date_raw = dateEl.innerText;
-                        }
+                        if (dateEl) post.post_date_raw = dateEl.innerText;
 
-                        // 6. Try to find thumbnail
-                        const img = container.querySelector('img');
-                        if (img) post.thumbnail = img.src;
+                        // Thumbnail
+                        const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
+                            img.src.includes('fbcdn') && !img.src.includes('profile')
+                        );
+                        if (imgs.length > 0) post.thumbnail = imgs[0].src;
+
+                        // Type detection
+                        if (post.url.includes('/reel/') || post.url.includes('/videos/')) {
+                            post.type = 'video';
+                        } else {
+                            post.type = 'post';
+                        }
 
                         results.push(post);
                     }
@@ -210,35 +223,37 @@ class FacebookPageScraper(FacebookBaseScraper):
 
                 return {
                     posts: results,
-                    view_matches: viewMatches || []
+                    total_candidates: candidates.size
                 };
             }""")
 
             # ---- PROCESS EXTRACTED POSTS IN PYTHON ----
-            raw_result = posts # The evaluate now returns an object
+            raw_result = posts 
             extracted_posts = raw_result.get("posts", [])
-            page_view_matches = raw_result.get("view_matches", [])
+            total_candidates = raw_result.get("total_candidates", 0)
+            self.logger.info(f"JS Search found {total_candidates} candidates and {len(extracted_posts)} formatted posts.")
             
             processed_posts = []
+            seen_urls = set()
+
             for p in extracted_posts:
+                post_url = p.get("url")
+                if not post_url or post_url in seen_urls:
+                    continue
+                seen_urls.add(post_url)
+
                 # Use existing utility functions to parse metrics from gathered text
                 combined_text = (p.get("raw_text", "") + " " + " ".join(p.get("aria_labels", []))).lower()
                 
                 # Check for views in this specific post's text
                 views_val = _extract_views_count_from_text(combined_text)
                 
-                # If not found in post text, but we have global view matches, 
-                # this is a fallback for profiles where views are listed in a grid but not inside the post text
-                if not views_val and page_view_matches:
-                    # Very simple heuristic: if there's only one post and one view match, they probably belong together
-                    if len(extracted_posts) == 1 and len(page_view_matches) == 1:
-                        views_val = _extract_views_count_from_text(page_view_matches[0])
-
                 metrics = {
-                    "url": p.get("url"),
+                    "url": post_url,
                     "id": p.get("id"),
+                    "type": p.get("type", "post"),
                     "thumbnail": p.get("thumbnail"),
-                    "caption": p.get("caption") or p.get("raw_text", "")[:200], # Fallback to first 200 chars
+                    "caption": p.get("caption") or p.get("raw_text", "")[:200], # Fallback
                     "post_date_raw": p.get("post_date_raw"),
                     "reactions": _extract_reactions_count_from_text(combined_text),
                     "comments": _extract_comments_count_from_text(combined_text),
@@ -258,16 +273,20 @@ class FacebookPageScraper(FacebookBaseScraper):
 
             scraped_data["posts"] = processed_posts
             scraped_data["total_posts_found"] = len(processed_posts)
+            scraped_data["_debug"]["total_candidates"] = total_candidates
 
             if len(processed_posts) == 0:
-                self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug for analysis.")
+                self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug.")
                 scraped_data["_debug"]["full_html"] = await self.page.content()
-
-            self.logger.info(f"Page extraction complete. Found {len(processed_posts)} items.")
+            else:
+                self.logger.info(f"Page extraction successful. Found {len(processed_posts)} unique items.")
 
             return {
                 "status": "success",
-                "data": scraped_data
+                "data": {
+                    **scraped_data,
+                    "final_url": self.page.url if self.page else url
+                }
             }
 
         except Exception as e:

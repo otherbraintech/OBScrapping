@@ -165,8 +165,10 @@ class FacebookBaseScraper(BaseScraper):
         if "este contenido no está disponible" in low_content or "this content isn't available" in low_content:
             return "Content not available (possibly deleted or private)"
 
-        # Only hard-fail if page is very short AND has a login-only prompt
-        if len(content) < 3000 and any(kw in low_content for kw in ["inicia sesión", "log in", "sign in"]):
+        # Only hard-fail if page is extremely short (likely just a header/footer) 
+        # AND has a login prompt. Many pages show a sidebar login but have content.
+        if len(content) < 5000 and any(kw in low_content for kw in ["inicia sesión", "log in", "sign in"]):
+            self.logger.warning(f"Likely restricted content (short page with login prompt, length={len(content)})")
             return "Restricted content (requires login or valid cookies)"
 
         return None

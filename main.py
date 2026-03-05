@@ -156,8 +156,8 @@ async def run_scraper(
         # Ensure scraped_data is a dict (linter safety)
         s_data: Dict[str, Any] = scraped_data if isinstance(scraped_data, dict) else {}
         
-        # Priority: result["url"] (initial) > s_data["requested_url"] (from scraper)
-        final_url = result.get("url") or s_data.get("requested_url") or ""
+        # Priority: s_data["final_url"] > s_data["requested_url"] > result["url"]
+        final_url = s_data.get("final_url") or s_data.get("requested_url") or result.get("url") or ""
         task_logger.info(f"Finalizing result for URL: {final_url}")
 
         clean_result = {

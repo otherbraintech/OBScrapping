@@ -41,7 +41,8 @@ def _extract_reactions_count_from_text(text: str) -> Optional[str]:
     patterns = [
         r"(?:Tú|Usted|You|Usted,).*?(?:y\s*|and\s*)?([\d.,]+\s*[KMkm]?)\s*(?:personas?|others?)\s*(?:más|more)",
         r"(?:Todas las reacciones|Total reactions|Reacciones|Toutes les réactions):\s*([\d.,]+\s*[KMkm]?)",
-        r"([\d.,]+\s*[KMkm]?)\s*(?:reactions?|reaccione?s|r[eé]actions?|reações|reazioni|personas reaccionaron)",
+        r"([\d.,\s]+[KMkm]?)\s*(?:reactions?|reaccione?s|r[eé]actions?|reações|reazioni|personas reaccionaron|likes?)",
+        r"([\d.,\s]+[KMkm]?)\s*reacciones",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -56,7 +57,7 @@ def _extract_comments_count_from_text(text: str) -> Optional[str]:
     patterns = [
         r"view\s+all\s+([\d.,]+)\s*comments?",
         r"ver\s+los\s+([\d.,]+)\s*comentarios",
-        r"([\d.,]+)\s*(?:comments?|comentarios|commentaires?|commenti|comentários)",
+        r"([\d.,\s]+[KMkm]?)\s*(?:comments?|comentarios|commentaires?|commenti|comentários)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
@@ -79,6 +80,8 @@ def _extract_views_count_from_text(text: str) -> Optional[str]:
         r"([\d][\d\s.,]*[KMkm]?)\s*(?:views?|vues?|visualizaciones|reproducciones|vistas|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)",
         # Very relaxed catch-all for anything that looks like "Number Vues" or "Number Plays"
         r"([\d][\d.,\s]*[KMkm]?)\s*(?:vues?|views?|plays?|reprod\.|lectures?|visionnages?|visionnements?|replays?|bises?)",
+        # Single number at start followed by Views
+        r"^([\d.,\s]+[KMkm]?)\s*(?:views?|vues|vistas|reproducciones)",
     ]
     for pat in patterns:
         m = re.search(pat, text, re.IGNORECASE)
