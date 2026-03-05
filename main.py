@@ -57,6 +57,7 @@ class ScrapeRequest(BaseModel):
     raw_snippet_len: Optional[int] = 5000
     extra_wait_seconds: Optional[float] = 0.0
     dump_all: Optional[bool] = False
+    scroll_count: Optional[int] = 5
 
 class ScrapeTaskResponse(BaseModel):
     status: str
@@ -91,6 +92,8 @@ async def run_scraper(
     raw_snippet_len: int = 5000,
     extra_wait_seconds: float = 0.0,
     dump_all: bool = False,
+    scrape_type: Optional[str] = None,
+    scroll_count: int = 5,
 ):
     task_logger = TaskLogger(logger, {"task_id": task_id})
     task_logger.info(f"Starting modular scraper run for {url}")
@@ -107,7 +110,7 @@ async def run_scraper(
     scraper = None
     try:
         # Get appropriate scraper class from factory
-        scraper_cls = ScraperFactory.get_scraper_class(url)
+        scraper_cls = ScraperFactory.get_scraper_class(url, scrape_type=scrape_type)
         scraper = scraper_cls(task_id, logger)
         
         # Setup and Run
@@ -122,7 +125,8 @@ async def run_scraper(
         data = await scraper.run(
             url, 
             extra_wait_seconds=extra_wait_seconds, 
-            debug_raw=debug_raw
+            debug_raw=debug_raw,
+            scroll_count=scroll_count
         )
         
         if data.get("status") == "error":
@@ -267,6 +271,8 @@ async def scrape_endpoint(request: ScrapeRequest, background_tasks: BackgroundTa
         request.raw_snippet_len or 5000,
         request.extra_wait_seconds or 0.0,
         request.dump_all or False,
+        request.type,
+        request.scroll_count or 5,
     )
 
     return {

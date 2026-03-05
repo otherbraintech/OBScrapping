@@ -7,9 +7,17 @@ from .facebook.page import FacebookPageScraper
 
 class ScraperFactory:
     @staticmethod
-    def get_scraper_class(url: str) -> Type[BaseScraper]:
+    def get_scraper_class(url: str, scrape_type: str = None) -> Type[BaseScraper]:
         url_low = url.lower()
         
+        # Manual override by type
+        if scrape_type == "page_feed" or scrape_type == "public_profile":
+            return FacebookPageScraper
+        if scrape_type == "reel":
+            return FacebookReelScraper
+        if scrape_type == "post":
+            return FacebookPostScraper
+
         if "facebook.com" in url_low or "fb.watch" in url_low:
             # Handle profile/page/feed URLs
             # URLs like /PAGENAME/, /PAGENAME/reels, /PAGENAME/videos, /profile.php?id=...
