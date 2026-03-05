@@ -162,7 +162,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                 console.log(`Analyzing ${candidates.size} candidate containers`);
 
                 // Global views scan to help associate metrics
-                const globalText = document.body.innerText || "";
+                const globalText = (document.body && document.body.innerText) || "";
                 
                 Array.from(candidates).forEach((container, index) => {
                     // Skip if container is nested inside another candidate we already processed? 

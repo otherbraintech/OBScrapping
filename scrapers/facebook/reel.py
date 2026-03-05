@@ -238,7 +238,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                     // Start with restricted container but allow fallback to body for metrics
                     const playerContainer = document.querySelector('div[data-pagelet="GlimpseReelVideoPlayer"]')
                         || document.querySelector('div[role="main"]');
-                    const mainContainer = playerContainer || document.body;
+                    const mainContainer = playerContainer || document.body || document.documentElement || { querySelectorAll: () => [], querySelector: () => null };
 
                     // Recursive text and aria collection
                     const allInfo = [];

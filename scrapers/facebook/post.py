@@ -180,7 +180,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                         || document.querySelector('div[role="article"]')
                         || document.querySelector('div.x1y1zqc1');
                     
-                    const mainContainer = playerContainer || document.body;
+                    const mainContainer = playerContainer || document.body || document.documentElement || { querySelectorAll: () => [], querySelector: () => null };
 
                     // Aria labels
                     const ariaLabels = [];
@@ -208,7 +208,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                     });
                     data.button_texts = buttonTexts;
                     // Comprehensive View Count search - Search whole page but filter noise
-                    const searchElement = document.body || document.documentElement || {innerText: ""};
+                    const searchElement = document.body || document.documentElement || { innerText: "" };
                     const searchSource = searchElement.innerText || "";
                     
                     // Improved Regex to match both "Number views" and "Views: Number"
