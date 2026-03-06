@@ -94,7 +94,7 @@ class FacebookReelScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "post_type": "video",  # Reels are always videos
-            "version": "1.2.0-ULTRA-STABLE",
+            "version": "1.2.5-STABLE-EXPLICIT",
             "_debug": {}
         }
 

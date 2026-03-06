@@ -109,39 +109,42 @@ async def run_scraper(
 
     scraper = None
     try:
-        # Get appropriate scraper class from factory
-        scraper_cls = ScraperFactory.get_scraper_class(url, scrape_type=scrape_type)
-        scraper = scraper_cls(task_id, logger)
-        
-        # Setup and Run
-        proxy = get_proxy_url()
+        task_logger.info(f"--- STARTING SCRAPE TASK {task_id} WITH VERSION {VERSION} ---")
         try:
-            await scraper.setup_browser(proxy_server=proxy)
-        except Exception as proxy_err:
-            task_logger.warning(f"Initial browser setup failed (possibly proxy): {proxy_err}. Retrying without proxy.")
-            await scraper.setup_browser(proxy_server=None)
-        
-        # Execute the scraping logic
-        data = await scraper.run(
-            url, 
-            extra_wait_seconds=extra_wait_seconds, 
-            debug_raw=debug_raw,
-            scroll_count=scroll_count,
-            dump_all=dump_all
-        )
-        
-        if data.get("status") == "error":
-            result["status"] = "error"
-            result["error"] = data.get("message")
-            result["data"] = data.get("data", {}) # Include any diagnostic data even on error
-        else:
-            result["status"] = "success"
-            result["data"] = data.get("data", {})
+            # Get appropriate scraper class from factory
+            scraper_cls = ScraperFactory.get_scraper_class(url, scrape_type=scrape_type)
+            scraper = scraper_cls(task_id, logger)
             
-    except Exception as e:
-        task_logger.error(f"Fatal error in orchestrator: {e}", exc_info=True)
-        result["status"] = "error"
-        result["error"] = str(e)
+            # Setup and Run
+            proxy = get_proxy_url()
+            try:
+                await scraper.setup_browser(proxy_server=proxy)
+            except Exception as proxy_err:
+                task_logger.warning(f"Initial browser setup failed (possibly proxy): {proxy_err}. Retrying without proxy.")
+                await scraper.setup_browser(proxy_server=None)
+            
+            # Execute the scraping logic
+            data = await scraper.run(
+                url, 
+                extra_wait_seconds=extra_wait_seconds, 
+                debug_raw=debug_raw,
+                scroll_count=scroll_count,
+                dump_all=dump_all
+            )
+            
+            if data.get("status") == "error":
+                result["status"] = "error"
+                # PREPEND version to error for absolute clarity in UI
+                result["error"] = f"[VER:{VERSION}] {data.get('message')}"
+                result["data"] = data.get("data", {}) 
+            else:
+                result["status"] = "success"
+                result["data"] = data.get("data", {})
+                
+        except Exception as e:
+            task_logger.error(f"Fatal error in orchestrator: {e}", exc_info=True)
+            result["status"] = "error"
+            result["error"] = f"CRITICAL_ERROR_{VERSION}: {str(e)}"
     finally:
         if scraper:
             await scraper.close()
@@ -246,7 +249,7 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-VERSION = "1.2.0-ULTRA-STABLE"
+VERSION = "1.2.5-STABLE-EXPLICIT"
 app = FastAPI(title="Modular Social Scraper API", version=VERSION)
 
 @app.get("/")
