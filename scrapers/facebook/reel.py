@@ -247,7 +247,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         if (node.nodeType === 1) { // Element
                             const aria = node.getAttribute('aria-label');
                             if (aria && aria.length < 150) allInfo.push(aria);
-                            const text = node.innerText;
+                            const text = node.innerText || node.textContent || "";
                             if (text && text.length < 150) allInfo.push(text);
                             node.childNodes.forEach(walk);
                         }
@@ -308,7 +308,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         || mainContainer.querySelector('div[dir="auto"] > div[dir="auto"]')
                         || mainContainer.querySelector('div[id^="mount_0_0"] span[dir="auto"]');
                     if (captionEl) {
-                        data.caption = captionEl.innerText ? captionEl.innerText.trim() : null;
+                        data.caption = captionEl.innerText ? captionEl.innerText.trim() : (captionEl.textContent ? captionEl.textContent.trim() : null);
                     }
 
                     // Username from DOM
@@ -316,7 +316,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                         || mainContainer.querySelector('span[role="link"] strong')
                         || mainContainer.querySelector('a[href*="/reel/"] + div span');
                     if (usernameEl) {
-                        data.username = usernameEl.innerText ? usernameEl.innerText.trim() : null;
+                        data.username = usernameEl.innerText ? usernameEl.innerText.trim() : (usernameEl.textContent ? usernameEl.textContent.trim() : null);
                     }
 
                     return data;

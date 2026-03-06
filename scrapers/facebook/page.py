@@ -139,10 +139,11 @@ class FacebookPageScraper(FacebookBaseScraper):
                 const allLinks = document.querySelectorAll('a[role="link"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"]');
                 allLinks.forEach(a => {
                     const aria = a.getAttribute('aria-label') || '';
+                    const innerT = a.innerText || "";
                     const hasTime = /\d/.test(aria) && (
                         /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(aria) ||
                         /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(aria) ||
-                        a.innerText.includes(' ') && /\d/.test(a.innerText)
+                        innerT.includes(' ') && /\d/.test(innerT)
                     );
                     const isReel = a.href.includes('/reel/') || a.href.includes('/videos/');
                     
@@ -150,7 +151,8 @@ class FacebookPageScraper(FacebookBaseScraper):
                         let parent = a.parentElement;
                         for(let i=0; i<10; i++) {
                             if(!parent) break;
-                            if(parent.innerText && parent.innerText.length > 50) {
+                            const pText = parent.innerText || "";
+                            if(pText && pText.length > 50) {
                                 candidates.add(parent);
                             }
                             if(parent.getAttribute('role') === 'article') break;
@@ -188,7 +190,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                                 || post.url.match(/fbid=([^&]+)/);
                         if (m) post.id = m[1];
                         
-                        post.raw_text = container.innerText || "";
+                        post.raw_text = (container && container.innerText) || "";
                         
                         const ariaLabels = [];
                         container.querySelectorAll('[aria-label]').forEach(el => {
@@ -198,11 +200,11 @@ class FacebookPageScraper(FacebookBaseScraper):
 
                         // Caption lookup
                         const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"], .x1iorvi4.x17qzfe7.x6ikm8r.x1ot46pu');
-                        if (captionEl) post.caption = captionEl.innerText;
+                        if (captionEl) post.caption = captionEl.innerText || "";
 
                         // Date lookup
                         const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"] span, a[href*="reel"] span > span, span[data-ad-preview="time"]');
-                        if (dateEl) post.post_date_raw = dateEl.innerText;
+                        if (dateEl) post.post_date_raw = dateEl.innerText || "";
 
                         // Thumbnail
                         const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
