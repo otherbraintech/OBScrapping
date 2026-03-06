@@ -68,7 +68,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.1.2-FINAL-CHECK",
+            "version": "1.2.0-ULTRA-STABLE",
             "posts": [],
             "total_posts_found": 0,
             "_debug": {}
@@ -115,14 +115,13 @@ class FacebookPageScraper(FacebookBaseScraper):
             self.logger.info("Evaluating JavaScript to extract post containers...")
             posts = await self.page.evaluate(r"""() => {
                 const results = [];
-                const safeGetText = (el) => {
-                    if(!el) return "";
-                    try {
-                        const t = el.innerText || el.textContent || "";
-                        return String(t).trim();
-                    } catch(e) { return ""; }
+                const safeGetText = (e) => {
+                    if(!e) return "";
+                    let v = "";
+                    try { v = e.innerText || e.textContent || ""; } catch(ex) {}
+                    return v.trim();
                 };
-                console.log("FINAL_CHECK_v1.1.2: Starting container search...");
+                console.log("V1.2.0_ULTRA_STABLE_START");
                 
                 // 1. Broad search for container selectors (modern FB layouts)
                 const selectors = [
