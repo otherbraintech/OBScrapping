@@ -126,7 +126,8 @@ async def run_scraper(
             url, 
             extra_wait_seconds=extra_wait_seconds, 
             debug_raw=debug_raw,
-            scroll_count=scroll_count
+            scroll_count=scroll_count,
+            dump_all=dump_all
         )
         
         if data.get("status") == "error":
@@ -245,7 +246,7 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-VERSION = "1.1.1"
+VERSION = "1.1.1-safe"
 app = FastAPI(title="Modular Social Scraper API", version=VERSION)
 
 @app.get("/")

@@ -61,6 +61,7 @@ class FacebookPageScraper(FacebookBaseScraper):
 
         scroll_count: int = kwargs.get("scroll_count", 5)
         extra_wait: float = kwargs.get("extra_wait_seconds", 3.0)
+        dump_all: bool = kwargs.get("dump_all", False)
 
         scraped_data: Dict[str, Any] = {
             "task_id": self.task_id,
@@ -114,7 +115,8 @@ class FacebookPageScraper(FacebookBaseScraper):
             self.logger.info("Evaluating JavaScript to extract post containers...")
             posts = await self.page.evaluate(r"""() => {
                 const results = [];
-                console.log("Starting container search...");
+                console.log("Starting container search (v1.1.1-safe)...");
+                const safeGetText = (el) => (el && (el.innerText || el.textContent || "")).trim();
                 
                 // 1. Broad search for container selectors (modern FB layouts)
                 const selectors = [
@@ -139,7 +141,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                 const allLinks = document.querySelectorAll('a[role="link"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"]');
                 allLinks.forEach(a => {
                     const aria = a.getAttribute('aria-label') || '';
-                    const innerT = a.innerText || "";
+                    const innerT = safeGetText(a);
                     const hasTime = /\d/.test(aria) && (
                         /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(aria) ||
                         /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(aria) ||
@@ -151,7 +153,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                         let parent = a.parentElement;
                         for(let i=0; i<10; i++) {
                             if(!parent) break;
-                            const pText = parent.innerText || "";
+                            const pText = safeGetText(parent);
                             if(pText && pText.length > 50) {
                                 candidates.add(parent);
                             }
@@ -164,7 +166,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                 console.log(`Analyzing ${candidates.size} candidate containers`);
 
                 // Global views scan to help associate metrics
-                const globalText = (document.body && document.body.innerText) || "";
+                const globalText = safeGetText(document.body) || safeGetText(document.documentElement);
                 
                 Array.from(candidates).forEach((container, index) => {
                     // Skip if container is nested inside another candidate we already processed? 
@@ -190,7 +192,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                                 || post.url.match(/fbid=([^&]+)/);
                         if (m) post.id = m[1];
                         
-                        post.raw_text = (container && container.innerText) || "";
+                        post.raw_text = safeGetText(container);
                         
                         const ariaLabels = [];
                         container.querySelectorAll('[aria-label]').forEach(el => {
@@ -200,11 +202,11 @@ class FacebookPageScraper(FacebookBaseScraper):
 
                         // Caption lookup
                         const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"], .x1iorvi4.x17qzfe7.x6ikm8r.x1ot46pu');
-                        if (captionEl) post.caption = captionEl.innerText || "";
+                        if (captionEl) post.caption = safeGetText(captionEl);
 
                         // Date lookup
                         const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"] span, a[href*="reel"] span > span, span[data-ad-preview="time"]');
-                        if (dateEl) post.post_date_raw = dateEl.innerText || "";
+                        if (dateEl) post.post_date_raw = safeGetText(dateEl);
 
                         // Thumbnail
                         const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
@@ -276,6 +278,9 @@ class FacebookPageScraper(FacebookBaseScraper):
             scraped_data["posts"] = processed_posts
             scraped_data["total_posts_found"] = len(processed_posts)
             scraped_data["_debug"]["total_candidates"] = total_candidates
+            
+            if dump_all:
+                scraped_data["_debug"]["full_html"] = await self.page.content()
 
             if len(processed_posts) == 0:
                 self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug.")
