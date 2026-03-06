@@ -116,13 +116,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             posts = await self.page.evaluate(r"""() => {
                 const results = [];
                 console.log("V3_ULTRA_SAFE: Starting container search...");
-                const safeGetText = (el) => {
-                    if (!el) return "";
-                    try {
-                        const txt = el.innerText || el.textContent || "";
-                        return String(txt).trim();
-                    } catch(e) { return ""; }
-                };
+                const safeGetText = (el) => (el?.innerText || el?.textContent || "").trim();
                 
                 // 1. Broad search for container selectors (modern FB layouts)
                 const selectors = [
