@@ -110,6 +110,7 @@ class FacebookPageScraper(FacebookBaseScraper):
 
             # ---- EXTRACT POSTS DATA ----
             page_html: str = await self.page.content()
+            self.logger.info(f"Page content captured. Length: {len(page_html)} characters.")
             
             # This JS script finds all post containers and extracts their basic info
             self.logger.info("Evaluating JavaScript to extract post containers...")

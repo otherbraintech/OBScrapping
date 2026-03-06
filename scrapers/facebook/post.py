@@ -88,6 +88,7 @@ class FacebookPostScraper(FacebookBaseScraper):
                 head_html = ""
 
             page_html = await self.page.content()
+            self.logger.info(f"Page content captured (Post). Length: {len(page_html)} characters.")
             scraped_data["diagnostic_html_length"] = len(page_html)
 
             og_found: int = 0

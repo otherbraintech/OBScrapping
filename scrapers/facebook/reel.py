@@ -133,6 +133,7 @@ class FacebookReelScraper(FacebookBaseScraper):
                 head_html = ""
 
             page_html_str: str = str(await self.page.content())
+            self.logger.info(f"Page content captured (Reel). Length: {len(page_html_str)} characters.")
             scraped_data["diagnostic_html_length"] = len(page_html_str)
 
             og_found: int = 0

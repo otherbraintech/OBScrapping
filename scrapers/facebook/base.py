@@ -161,15 +161,20 @@ class FacebookBaseScraper(BaseScraper):
 
         content = await self.page.content()
         low_content = content.lower()
+        self.logger.info(f"Checking restriction. URL: {current_url}, Content Length: {len(content)}")
 
         if "este contenido no está disponible" in low_content or "this content isn't available" in low_content:
             return "Content not available (possibly deleted or private)"
 
         # Only hard-fail if page is extremely short (likely just a header/footer) 
         # AND has a login prompt. Many pages show a sidebar login but have content.
-        if len(content) < 5000 and any(kw in low_content for kw in ["inicia sesión", "log in", "sign in"]):
-            self.logger.warning(f"Likely restricted content (short page with login prompt, length={len(content)})")
-            return "Restricted content (requires login or valid cookies)"
+        if len(content) < 5000:
+            if any(kw in low_content for kw in ["inicia sesión", "log in", "sign in"]):
+                self.logger.warning(f"Likely restricted content (short page with login prompt, length={len(content)})")
+                return "Restricted content (requires login or valid cookies)"
+            if len(content) < 1000:
+                self.logger.warning(f"Extremely short page content (length={len(content)}). Possibly blocked or loading failure.")
+                return f"Page content too short ({len(content)} bytes). Possible block or load failure."
 
         return None
 
