@@ -68,7 +68,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.3.0-RESILIENT",
+            "version": "1.3.1-DIAGNOSTIC",
             "posts": [],
             "total_posts_found": 0,
             "_debug": {}
@@ -81,40 +81,94 @@ class FacebookPageScraper(FacebookBaseScraper):
             # ---- INJECT COOKIES ----
             await self.inject_cookies()
 
-            # ---- NAVIGATE ----
+            # ---- NAVIGATE WITH RESILIENT STRATEGY ----
             self.logger.info(f"Navigating to Page: {url}")
-            try:
-                # Wait for basic HTML structure first
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                self.logger.info("DOM content loaded, waiting for network to settle (optional)...")
-                # Wait briefly for network, but don't hang if it's busy
-                await self.page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception as e:
-                self.logger.warning(f"Navigation wait partially timed out or failed: {e}. Proceeding with current state.")
             
+            # Attempt 1: Standard navigation
+            page_loaded = False
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    elif attempt == 1:
+                        self.logger.warning("Attempt 1 failed or empty. Retrying with reload...")
+                        await self.page.reload(wait_until="domcontentloaded", timeout=45000)
+                    else:
+                        self.logger.warning("Attempt 2 failed. Trying with load wait...")
+                        await self.page.goto(url, wait_until="load", timeout=60000)
+                    
+                    # Brief wait for dynamic content
+                    await asyncio.sleep(3.0)
+                    
+                    # Check if page has meaningful content
+                    content_length = await self.page.evaluate("() => document.body ? document.body.innerHTML.length : 0")
+                    current_url = self.page.url or ""
+                    page_title = await self.page.evaluate("() => document.title || ''")
+                    
+                    self.logger.info(f"Navigation attempt {attempt+1}: content_length={content_length}, url={current_url}, title={page_title}")
+                    
+                    # Check for login redirect
+                    if "login" in current_url.lower() or "checkpoint" in current_url.lower():
+                        self.logger.warning(f"Redirected to login/checkpoint: {current_url}")
+                        scraped_data["_debug"]["redirect_detected"] = current_url
+                        break
+                    
+                    if content_length > 5000:
+                        page_loaded = True
+                        self.logger.info(f"Page loaded successfully on attempt {attempt+1}")
+                        break
+                    else:
+                        self.logger.warning(f"Page seems empty on attempt {attempt+1} ({content_length} bytes)")
+                        await asyncio.sleep(3.0)
+                        
+                except Exception as nav_err:
+                    self.logger.warning(f"Navigation attempt {attempt+1} error: {nav_err}")
+                    await asyncio.sleep(2.0)
+
+            # Capture pre-extraction diagnostics
+            pre_check = await self.page.evaluate(r"""() => {
+                return {
+                    url: window.location.href,
+                    title: document.title,
+                    body_length: document.body ? document.body.innerHTML.length : 0,
+                    body_text_length: document.body ? (document.body.innerText || '').length : 0,
+                    has_role_main: !!document.querySelector('div[role="main"]'),
+                    has_articles: document.querySelectorAll('div[role="article"]').length,
+                    total_links: document.querySelectorAll('a[href]').length,
+                    total_images: document.querySelectorAll('img').length,
+                    has_login_form: !!document.querySelector('form[action*="login"]'),
+                    fb_content_links: document.querySelectorAll('a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"]').length,
+                };
+            }""")
+            self.logger.info(f"Pre-extraction diagnostics: {pre_check}")
+            scraped_data["_debug"]["pre_check"] = pre_check
+
+            if not page_loaded:
+                body_length = pre_check.get("body_length", 0)
+                if body_length < 1000:
+                    scraped_data["_debug"]["full_html"] = await self.page.content()
+                    return self.format_error(
+                        f"Facebook returned an empty or minimal page ({body_length} bytes). "
+                        f"This usually means: (1) cookies expired, (2) IP is blocked, or (3) the page requires login. "
+                        f"Current URL: {pre_check.get('url', 'unknown')}. Title: {pre_check.get('title', 'unknown')}.",
+                        data=scraped_data
+                    )
+            
+            # ---- DISMISS LOGIN POPUPS ----
+            await self.dismiss_login_banner()
+
             # Additional wait for Reels/Videos tabs which are slower
             is_reels = "/reels/" in url.lower() or "/videos/" in url.lower()
             if is_reels:
                 self.logger.info("Detected Reels/Videos tab, waiting extra time for grid...")
                 await asyncio.sleep(5.0)
 
-            # --- EMPTY CONTENT RETRY ---
-            content_check = await self.page.content()
-            self.logger.info(f"Check 1: Length={len(content_check)} bytes for URL={self.page.url}")
-            if len(content_check) < 1000:
-                self.logger.warning(f"Initial load produced very little content ({len(content_check)} bytes). Retrying once...")
-                await asyncio.sleep(3.0)
-                await self.page.reload(wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(3.0)
-                content_check = await self.page.content()
-                self.logger.info(f"Check 2 (Retry): Length={len(content_check)} bytes")
-
-            # Wait for main content or posts to appear
-            self.logger.info("Waiting for page content to load...")
+            # Wait for main content to appear (soft wait)
+            self.logger.info("Waiting for page content selectors...")
             try:
-                await self.page.wait_for_selector('div[role="main"], div[role="article"], div.x1yzt60o', timeout=30000)
+                await self.page.wait_for_selector('div[role="main"], div[role="article"], a[href*="/posts/"], a[href*="/reel/"]', timeout=15000)
             except Exception:
-                self.logger.warning("Main content selectors not found, proceeding with whatever is loaded...")
+                self.logger.warning("Content selectors not found within timeout, proceeding anyway...")
             
             await asyncio.sleep(max(extra_wait, 3.0))
 
