@@ -259,7 +259,7 @@ async def run_scraper(
             await send_webhook(clean_result, task_logger)
 
 # --- FastAPI App ---
-VERSION = "1.2.5-STABLE-EXPLICIT"
+VERSION = "1.3.0-RESILIENT"
 app = FastAPI(title="Modular Social Scraper API", version=VERSION)
 
 @app.get("/")

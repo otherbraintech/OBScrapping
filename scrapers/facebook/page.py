@@ -68,7 +68,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.2.5-STABLE-EXPLICIT",
+            "version": "1.3.0-RESILIENT",
             "posts": [],
             "total_posts_found": 0,
             "_debug": {}
@@ -136,122 +136,162 @@ class FacebookPageScraper(FacebookBaseScraper):
                 const results = [];
                 const safeGetText = (e) => {
                     if(!e) return "";
-                    let v = "";
-                    try { v = e.innerText || e.textContent || ""; } catch(ex) {}
-                    return v.trim();
+                    try { return (e.innerText || e.textContent || "").trim(); } catch(ex) { return ""; }
                 };
-                console.log("V1.2.0_ULTRA_STABLE_START");
-                
-                // 1. Broad search for container selectors (modern FB layouts)
-                const selectors = [
-                    'div[role="article"]',
-                    'div[data-pagelet="ProfileTimeline"] [role="main"] > div > div > div',
-                    'div[data-testid="post_container"]',
-                    'div[style*="aspect-ratio: 0.56"]', // Common for single Reels in grid
-                    'div[style*="aspect-ratio:0.56"]',
-                    'div.x1yzt60o.x1n2onr6.xh8yej3.x1ja2u2z', // Common grid classes
-                    'div.x78zum5.x1q0g3np.x1a2a7bu.x1qugh54', // Reels grid items
-                    'div.x1y1zqc1',
-                    'div.x1lliihq' // Very generic but useful in some layouts
-                ];
+                console.log("V1.3.0_RESILIENT_EXTRACTION_START");
 
-                // 2. Build candidates list
-                const candidates = new Set();
-                selectors.forEach(sel => {
-                    document.querySelectorAll(sel).forEach(el => candidates.add(el));
+                // ============================================================
+                // STRATEGY 1: Link-first approach (most resilient)
+                // Find all links that point to FB content, then walk up to container
+                // ============================================================
+                const contentLinks = document.querySelectorAll(
+                    'a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"], ' +
+                    'a[href*="/permalink/"], a[href*="/story.php"], a[href*="fbid="], ' +
+                    'a[href*="/photo"], a[href*="/watch/"]'
+                );
+                console.log(`Found ${contentLinks.length} content links on page`);
+
+                const candidates = new Map(); // url -> container element
+
+                contentLinks.forEach(link => {
+                    const href = link.href || "";
+                    if (!href || href === "#") return;
+
+                    // Walk up the DOM to find a meaningful container
+                    let el = link;
+                    let bestContainer = null;
+                    for (let i = 0; i < 15; i++) {
+                        el = el.parentElement;
+                        if (!el || el === document.body) break;
+                        
+                        const role = el.getAttribute('role');
+                        const text = safeGetText(el);
+                        
+                        if (role === 'article') {
+                            bestContainer = el;
+                            break;
+                        }
+                        
+                        if (text.length > 80 && el.querySelectorAll('a, img, span').length > 3) {
+                            bestContainer = el;
+                        }
+                    }
+                    
+                    if (bestContainer && !candidates.has(href)) {
+                        candidates.set(href, { element: bestContainer, url: href });
+                    }
                 });
 
-                // 3. Fallback: Search for containers by looking for timestamp/permalink links
-                const allLinks = document.querySelectorAll('a[role="link"], a[href*="/reel/"], a[href*="/videos/"], a[href*="/posts/"]');
-                allLinks.forEach(a => {
-                    const aria = a.getAttribute('aria-label') || '';
-                    const innerT = safeGetText(a);
-                    const hasTime = /\d/.test(aria) && (
-                        /hora|minuto|día|semana|mes|año|hour|minute|day|week|month|year|ago|hace|ayer|yesterday/i.test(aria) ||
-                        /\d{1,2}\s*(de\s+)?\w+\s*(de\s+)?\d{4}/i.test(aria) ||
-                        innerT.includes(' ') && /\d/.test(innerT)
-                    );
-                    const isReel = a.href.includes('/reel/') || a.href.includes('/videos/');
-                    
-                    if (hasTime || isReel) {
-                        let parent = a.parentElement;
-                        for(let i=0; i<10; i++) {
-                            if(!parent) break;
-                            const pText = safeGetText(parent);
-                            if(pText && pText.length > 50) {
-                                candidates.add(parent);
+                // ============================================================
+                // STRATEGY 2: Role-based fallback
+                // ============================================================
+                if (candidates.size === 0) {
+                    console.log("Strategy 1 found nothing. Trying role=article...");
+                    document.querySelectorAll('div[role="article"]').forEach(article => {
+                        const links = article.querySelectorAll('a[href]');
+                        let bestLink = null;
+                        links.forEach(a => {
+                            const h = a.href || "";
+                            if (h.match(/\/(posts|reel|videos|permalink|story\.php|photo|watch)\//i) || h.includes('fbid=')) {
+                                bestLink = h;
                             }
-                            if(parent.getAttribute('role') === 'article') break;
-                            parent = parent.parentElement;
-                        }
-                    }
-                });
-
-                console.log(`Analyzing ${candidates.size} candidate containers`);
-
-                // Global views scan to help associate metrics
-                const globalText = safeGetText(document.body) || safeGetText(document.documentElement);
-                
-                Array.from(candidates).forEach((container, index) => {
-                    // Skip if container is nested inside another candidate we already processed? 
-                    // No, let's keep all for now and deduplicate by URL later.
-                    
-                    const post = { index };
-                    
-                    // 1. Link Extraction (URL)
-                    const linkEls = Array.from(container.querySelectorAll('a[href]'));
-                    const fbLink = linkEls.find(a => 
-                        a.href.includes('/reel/') || 
-                        a.href.includes('/videos/') || 
-                        a.href.includes('/posts/') || 
-                        a.href.includes('/permalink/') || 
-                        a.href.includes('/story.php') ||
-                        a.href.includes('fbid=') ||
-                        a.href.includes('/photo')
-                    );
-
-                    if (fbLink) {
-                        post.url = fbLink.href;
-                        const m = post.url.match(/\/(?:reel|videos|posts|permalink|story\.php|photo)\/([^/?]+)/) 
-                                || post.url.match(/fbid=([^&]+)/);
-                        if (m) post.id = m[1];
-                        
-                        post.raw_text = safeGetText(container);
-                        
-                        const ariaLabels = [];
-                        container.querySelectorAll('[aria-label]').forEach(el => {
-                            ariaLabels.push(el.getAttribute('aria-label'));
                         });
-                        post.aria_labels = ariaLabels;
-
-                        // Caption lookup
-                        const captionEl = container.querySelector('div[id][dir="auto"], div[data-ad-preview="message"], .x1iorvi4.x17qzfe7.x6ikm8r.x1ot46pu');
-                        if (captionEl) post.caption = safeGetText(captionEl);
-
-                        // Date lookup
-                        const dateEl = container.querySelector('span[id*="jsc_c"], a[href*="posts"] span, a[href*="reel"] span > span, span[data-ad-preview="time"]');
-                        if (dateEl) post.post_date_raw = safeGetText(dateEl);
-
-                        // Thumbnail
-                        const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
-                            img.src.includes('fbcdn') && !img.src.includes('profile')
-                        );
-                        if (imgs.length > 0) post.thumbnail = imgs[0].src;
-
-                        // Type detection
-                        if (post.url.includes('/reel/') || post.url.includes('/videos/')) {
-                            post.type = 'video';
-                        } else {
-                            post.type = 'post';
+                        if (bestLink && !candidates.has(bestLink)) {
+                            candidates.set(bestLink, { element: article, url: bestLink });
                         }
+                    });
+                }
 
-                        results.push(post);
+                // ============================================================
+                // STRATEGY 3: Pagelet-based fallback
+                // ============================================================
+                if (candidates.size === 0) {
+                    console.log("Strategy 2 found nothing. Trying data-pagelet...");
+                    const pagelets = document.querySelectorAll(
+                        'div[data-pagelet*="ProfileTimeline"], div[data-pagelet*="Feed"], ' +
+                        'div[data-pagelet*="Page"], div[role="main"]'
+                    );
+                    pagelets.forEach(pagelet => {
+                        pagelet.querySelectorAll('a[href]').forEach(link => {
+                            const h = link.href || "";
+                            if (h.match(/\/(posts|reel|videos|permalink|photo|watch)\//i) || h.includes('fbid=')) {
+                                if (!candidates.has(h)) {
+                                    let parent = link;
+                                    for (let i = 0; i < 8; i++) {
+                                        parent = parent.parentElement;
+                                        if (!parent) break;
+                                        if (safeGetText(parent).length > 50) {
+                                            candidates.set(h, { element: parent, url: h });
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    });
+                }
+
+                console.log(`Total unique candidates: ${candidates.size}`);
+
+                // ============================================================
+                // EXTRACT DATA from each candidate
+                // ============================================================
+                candidates.forEach(({ element: container, url: postUrl }) => {
+                    const post = { url: postUrl };
+                    
+                    const idMatch = postUrl.match(/\/(?:reel|videos|posts|permalink|story\.php|photo|watch)\/([^/?&]+)/) 
+                                  || postUrl.match(/fbid=([^&]+)/);
+                    if (idMatch) post.id = idMatch[1];
+                    
+                    post.raw_text = safeGetText(container);
+                    
+                    const ariaLabels = [];
+                    container.querySelectorAll('[aria-label]').forEach(el => {
+                        const label = el.getAttribute('aria-label');
+                        if (label && label.length < 200) ariaLabels.push(label);
+                    });
+                    post.aria_labels = ariaLabels;
+
+                    const captionEl = container.querySelector(
+                        'div[id][dir="auto"], div[data-ad-preview="message"], div[dir="auto"][style*="text-align"]'
+                    );
+                    if (captionEl) post.caption = safeGetText(captionEl);
+
+                    const timeEl = container.querySelector('abbr[data-utime], time, span[id*="jsc_c"]');
+                    if (timeEl) {
+                        post.post_date_raw = safeGetText(timeEl) || timeEl.getAttribute('title') || timeEl.getAttribute('datetime') || "";
                     }
+
+                    const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
+                        img.src && img.src.includes('fbcdn') && 
+                        !img.src.includes('profile') && !img.src.includes('emoji') &&
+                        (img.width > 50 || img.naturalWidth > 50)
+                    );
+                    if (imgs.length > 0) post.thumbnail = imgs[0].src;
+
+                    if (postUrl.includes('/reel/') || postUrl.includes('/videos/') || postUrl.includes('/watch/')) {
+                        post.type = 'video';
+                    } else {
+                        post.type = 'post';
+                    }
+
+                    results.push(post);
                 });
+
+                // Diagnostic info
+                const debugInfo = {
+                    total_links_on_page: document.querySelectorAll('a[href]').length,
+                    total_divs: document.querySelectorAll('div').length,
+                    has_role_main: document.querySelector('div[role="main"]') !== null,
+                    has_role_article: document.querySelectorAll('div[role="article"]').length,
+                    page_title: document.title || "N/A",
+                    body_text_length: (document.body ? document.body.innerText || "" : "").length,
+                };
 
                 return {
                     posts: results,
-                    total_candidates: candidates.size
+                    total_candidates: candidates.size,
+                    _extraction_debug: debugInfo
                 };
             }""")
 
@@ -259,7 +299,10 @@ class FacebookPageScraper(FacebookBaseScraper):
             raw_result = posts 
             extracted_posts = raw_result.get("posts", [])
             total_candidates = raw_result.get("total_candidates", 0)
+            extraction_debug = raw_result.get("_extraction_debug", {})
             self.logger.info(f"JS Search found {total_candidates} candidates and {len(extracted_posts)} formatted posts.")
+            self.logger.info(f"Extraction diagnostics: {extraction_debug}")
+            scraped_data["_debug"]["extraction_debug"] = extraction_debug
             
             processed_posts = []
             seen_urls = set()
