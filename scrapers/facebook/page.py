@@ -18,8 +18,9 @@ class FacebookPageScraper(FacebookBaseScraper):
     It scrolls through the page and captures engagement data for multiple posts/reels.
     """
 
-    async def _scroll_page(self, count=5):
-        """Scroll multiple times to load more posts with safety for null body."""
+    async def _scroll_page(self, count=10):
+        """Scroll multiple times to load more posts. Uses progressive delays and
+        multiple stale-height retries before giving up."""
         if not self.page:
             return
         
@@ -32,23 +33,36 @@ class FacebookPageScraper(FacebookBaseScraper):
 
         stale_count = 0
         for i in range(count):
-            self.logger.info(f"Scrolling ({i+1}/{count})...")
+            self.logger.info(f"Scrolling ({i+1}/{count})... current height={last_height}")
             try:
+                # Scroll to bottom
                 scroll_to_js = "window.scrollTo(0, (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight)"
                 await self.page.evaluate(scroll_to_js)
                 
-                await asyncio.sleep(2.5)
+                # Wait for new content to load (longer for later scrolls)
+                base_wait = 3.5 if i < 5 else 4.5
+                await asyncio.sleep(base_wait)
                 
                 new_height = await self.page.evaluate(get_height_js)
                 if new_height == last_height or new_height == 0:
                     stale_count += 1
+                    self.logger.info(f"Height stale (attempt {stale_count}/4), waiting extra...")
+                    # Progressive back-off: wait longer each stale attempt
+                    await asyncio.sleep(2.0 + stale_count)
+                    # Try a small scroll up then back down to trigger lazy loading
+                    await self.page.evaluate("window.scrollBy(0, -300)")
+                    await asyncio.sleep(1.0)
+                    await self.page.evaluate(scroll_to_js)
                     await asyncio.sleep(2.0)
                     new_height = await self.page.evaluate(get_height_js)
                     if new_height == last_height:
-                        if stale_count >= 2:
-                            self.logger.info("Height unchanged after 2 retries, stopping scroll.")
+                        if stale_count >= 4:
+                            self.logger.info("Height unchanged after 4 retries, stopping scroll.")
                             break
                         continue
+                    else:
+                        self.logger.info(f"Scroll trick worked! New height: {new_height}")
+                        stale_count = 0
                 else:
                     stale_count = 0
                 
@@ -60,7 +74,7 @@ class FacebookPageScraper(FacebookBaseScraper):
     async def run(self, url: str, **kwargs) -> Dict[str, Any]:
         self.logger.info(f"Running FacebookPageScraper for {url}")
 
-        scroll_count: int = kwargs.get("scroll_count", 5)
+        scroll_count: int = kwargs.get("scroll_count", 10)
         extra_wait: float = kwargs.get("extra_wait_seconds", 3.0)
         dump_all: bool = kwargs.get("dump_all", False)
 
@@ -69,7 +83,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.4.0-ARTICLE",
+            "version": "1.5.1-FEED-FIX",
             "page_info": {},
             "posts": [],
             "total_posts_found": 0,
@@ -164,11 +178,17 @@ class FacebookPageScraper(FacebookBaseScraper):
             # Wait for main content to appear (soft wait)
             self.logger.info("Waiting for page content selectors...")
             try:
-                await self.page.wait_for_selector('div[role="main"], div[role="article"], a[href*="/posts/"], a[href*="/reel/"]', timeout=15000)
+                await self.page.wait_for_selector('div[role="main"], div[role="article"], a[href*="/posts/"], a[href*="/reel/"]', timeout=20000)
+                self.logger.info("Content selector found, waiting for feed to populate...")
             except Exception:
                 self.logger.warning("Content selectors not found within timeout, proceeding anyway...")
             
-            await asyncio.sleep(max(extra_wait, 3.0))
+            # Give extra time for the feed to fully render before scrolling
+            await asyncio.sleep(max(extra_wait, 5.0))
+            
+            # Check how many articles are already visible before scrolling
+            pre_scroll_articles = await self.page.evaluate('() => document.querySelectorAll(\'div[role="article"]\').length')
+            self.logger.info(f"Articles visible before scrolling: {pre_scroll_articles}")
 
             # ---- CHECK FOR BLOCKS ----
             restriction_msg = await self.check_restricted()
@@ -222,6 +242,23 @@ class FacebookPageScraper(FacebookBaseScraper):
                 console.log("Strategy 1: Found " + articles.length + " article containers");
                 
                 articles.forEach(article => {
+                    // --- NEW FEATURE: Filter out Live Comments and Sidebars ---
+                    let p = article.parentElement;
+                    let isWithinNoise = false;
+                    for (let i = 0; i < 8; i++) {
+                        if (!p || p === document.body) break;
+                        const role = p.getAttribute('role');
+                        const label = (p.getAttribute('aria-label') || "").toLowerCase();
+                        // complementary = sidebars (where live chats live)
+                        // generic containers with "comentarios" or "chat" labels
+                        if (role === 'complementary' || label.includes('comentarios') || label.includes('comments') || label.includes('chat')) {
+                            isWithinNoise = true;
+                            break;
+                        }
+                        p = p.parentElement;
+                    }
+                    if (isWithinNoise) return;
+
                     // Find the best content link within this article
                     const allLinks = article.querySelectorAll('a[href]');
                     let bestLink = null;
