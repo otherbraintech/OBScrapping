@@ -19,9 +19,9 @@ class BaseScraper(ABC):
         """Core execution logic for the scraper."""
         pass
 
-    async def setup_browser(self, proxy_server: Optional[str] = None, user_agent: Optional[str] = None):
+    async def setup_browser(self, proxy_config: Optional[Dict[str, str]] = None, user_agent: Optional[str] = None):
         """Standard browser setup with stealth and optional proxy."""
-        self.logger.info(f"Setting up browser (Proxy: {'Yes' if proxy_server else 'No'})...")
+        self.logger.info(f"Setting up browser (Proxy: {'Yes' if proxy_config else 'No'})...")
         
         try:
             self.playwright = await async_playwright().start()
@@ -38,8 +38,9 @@ class BaseScraper(ABC):
                 "headless": True,
                 "args": browser_args
             }
-            if proxy_server:
-                launch_kwargs["proxy"] = {"server": proxy_server}
+            if proxy_config:
+                launch_kwargs["proxy"] = proxy_config
+                self.logger.info(f"Proxy configured: server={proxy_config.get('server')}, username={proxy_config.get('username', 'N/A')}")
                 
             self.browser = await self.playwright.chromium.launch(**launch_kwargs)
             

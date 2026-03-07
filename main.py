@@ -31,10 +31,14 @@ PROXY_PORT = os.getenv("PROXY_PORT")
 PROXY_USER = os.getenv("PROXY_USERNAME")
 PROXY_PASS = os.getenv("PROXY_PASSWORD")
 
-def get_proxy_url() -> Optional[str]:
+def get_proxy_config() -> Optional[Dict[str, str]]:
+    """Returns a Playwright-compatible proxy config dict, or None."""
     if all([PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS]):
-        # Format: http://user:pass@host:port
-        return f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+        return {
+            "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
+            "username": PROXY_USER,
+            "password": PROXY_PASS,
+        }
     return None
 
 # --- Logging Setup ---
@@ -116,12 +120,12 @@ async def run_scraper(
             scraper = scraper_cls(task_id, logger)
             
             # Setup and Run
-            proxy = get_proxy_url()
+            proxy = get_proxy_config()
             try:
-                await scraper.setup_browser(proxy_server=proxy)
+                await scraper.setup_browser(proxy_config=proxy)
             except Exception as proxy_err:
                 task_logger.warning(f"Initial browser setup failed (possibly proxy): {proxy_err}. Retrying without proxy.")
-                await scraper.setup_browser(proxy_server=None)
+                await scraper.setup_browser(proxy_config=None)
             
             # Execute the scraping logic
             data = await scraper.run(
