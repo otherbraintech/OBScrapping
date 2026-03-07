@@ -94,7 +94,7 @@ class FacebookReelScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "post_type": "video",  # Reels are always videos
-            "version": "1.2.5-STABLE-EXPLICIT",
+            "version": "1.3.2-COOKIES",
             "_debug": {}
         }
 
@@ -105,16 +105,59 @@ class FacebookReelScraper(FacebookBaseScraper):
             # ---- INJECT COOKIES before navigation ----
             await self.inject_cookies()
 
-            # ---- NAVIGATE ----
-            self.logger.info("Navigating to Reel page...")
-            try:
-                # Reels URLs are sometimes tricky, Playwright handles redirects well
-                await self.page.goto(url, wait_until="networkidle", timeout=60000)
-            except Exception:
-                self.logger.warning("Navigation timed out, proceeding anyway...")
+            # ---- NAVIGATE WITH RESILIENT STRATEGY ----
+            self.logger.info(f"Navigating to Reel: {url}")
+            
+            page_loaded = False
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    elif attempt == 1:
+                        self.logger.warning("Attempt 1 failed or empty. Retrying with reload...")
+                        await self.page.reload(wait_until="domcontentloaded", timeout=45000)
+                    else:
+                        self.logger.warning("Attempt 2 failed. Trying with networkidle wait...")
+                        await self.page.goto(url, wait_until="networkidle", timeout=60000)
+                    
+                    await asyncio.sleep(3.0)
+                    
+                    content_length = await self.page.evaluate("() => document.body ? document.body.innerHTML.length : 0")
+                    current_url = self.page.url or ""
+                    page_title = await self.page.evaluate("() => document.title || ''")
+                    
+                    self.logger.info(f"Navigation attempt {attempt+1}: content_length={content_length}, url={current_url}, title={page_title}")
+                    
+                    if "login" in current_url.lower() or "checkpoint" in current_url.lower():
+                        self.logger.warning(f"Redirected to login/checkpoint: {current_url}")
+                        scraped_data["_debug"]["redirect_detected"] = current_url
+                        break
+                    
+                    if content_length > 5000:
+                        page_loaded = True
+                        break
+                except Exception as nav_err:
+                    self.logger.warning(f"Navigation attempt {attempt+1} error: {nav_err}")
+                    await asyncio.sleep(2.0)
 
-            # Wait for page to settle
-            await asyncio.sleep(max(extra_wait, 3.0))
+            # Capture pre-extraction diagnostics
+            pre_check = await self.page.evaluate(r"""() => {
+                return {
+                    url: window.location.href,
+                    title: document.title,
+                    body_length: document.body ? document.body.innerHTML.length : 0,
+                    has_role_main: !!document.querySelector('div[role="main"]'),
+                    has_video: !!document.querySelector('video'),
+                    total_links: document.querySelectorAll('a[href]').length,
+                };
+            }""")
+            scraped_data["_debug"]["pre_check"] = pre_check
+
+            if not page_loaded and pre_check.get("body_length", 0) < 1000:
+                return self.format_error(
+                    f"Reel page returned empty/minimal content ({pre_check.get('body_length')} bytes). Check cookies.",
+                    data=scraped_data
+                )
 
             # ---- CHECK FOR HARD BLOCK ----
             restriction_msg = await self.check_restricted()
@@ -124,8 +167,7 @@ class FacebookReelScraper(FacebookBaseScraper):
             # ---- SCROLL to trigger lazy loading ----
             await self._scroll_page()
 
-            # ---- LAYER 1: OG META TAGS ----
-            self.logger.info("Extracting OG meta tags...")
+            # ---- EXTRACT CONTENT ----
             try:
                 head_val = await self.page.evaluate("document.head.innerHTML")
                 head_html: str = str(head_val) if head_val else ""
@@ -134,7 +176,7 @@ class FacebookReelScraper(FacebookBaseScraper):
 
             page_html_str: str = str(await self.page.content())
             self.logger.info(f"Page content captured (Reel). Length: {len(page_html_str)} characters.")
-            scraped_data["diagnostic_html_length"] = len(page_html_str)
+            scraped_data["_debug"]["html_length"] = len(page_html_str)
 
             og_found: int = 0
             for tag in OG_TAGS:
