@@ -25,21 +25,32 @@ from scrapers.factory import ScraperFactory
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 FACEBOOK_COOKIES = os.getenv("FACEBOOK_COOKIES", "")
 
-# Proxy configuration from environment
-PROXY_HOST = os.getenv("PROXY_HOST")
+# Proxy configuration from environment (supporting both formats)
+PROXY_HOST = os.getenv("PROXY_HOST") or os.getenv("PROXY_SERVER")
 PROXY_PORT = os.getenv("PROXY_PORT")
 PROXY_USER = os.getenv("PROXY_USERNAME")
 PROXY_PASS = os.getenv("PROXY_PASSWORD")
 
 def get_proxy_config() -> Optional[Dict[str, str]]:
     """Returns a Playwright-compatible proxy config dict, or None."""
-    if all([PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS]):
-        return {
-            "server": f"http://{PROXY_HOST}:{PROXY_PORT}",
-            "username": PROXY_USER,
-            "password": PROXY_PASS,
-        }
-    return None
+    # Check if we have server/host
+    if not PROXY_HOST:
+        return None
+        
+    config = {
+        "server": f"http://{PROXY_HOST}"
+    }
+    
+    # Add port if separate
+    if PROXY_PORT:
+        config["server"] += f":{PROXY_PORT}"
+        
+    # Add auth if provided
+    if PROXY_USER and PROXY_PASS:
+        config["username"] = PROXY_USER
+        config["password"] = PROXY_PASS
+        
+    return config
 
 # --- Logging Setup ---
 logging.basicConfig(
