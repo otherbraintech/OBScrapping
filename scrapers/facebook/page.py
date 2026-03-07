@@ -69,7 +69,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.3.4-STABLE",
+            "version": "1.4.0-ARTICLE",
             "page_info": {},
             "posts": [],
             "total_posts_found": 0,
@@ -213,69 +213,92 @@ class FacebookPageScraper(FacebookBaseScraper):
                 } catch(e) {}
 
                 // ============================================================
-                // FIND POST LINKS - filter out comments and generic nav links
+                // STRATEGY 1 (PRIMARY): Article-based extraction
+                // Find div[role="article"] and extract links + data from within each
                 // ============================================================
-                const contentLinks = document.querySelectorAll(
-                    'a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"], ' +
-                    'a[href*="/permalink/"], a[href*="/story.php"], a[href*="fbid="], ' +
-                    'a[href*="/photo"], a[href*="/watch/"]'
-                );
-
+                const articles = document.querySelectorAll('div[role="article"]');
                 const candidates = new Map();
-
-                contentLinks.forEach(link => {
-                    const href = link.href || "";
-                    if (!href || href === "#") return;
+                
+                console.log("Strategy 1: Found " + articles.length + " article containers");
+                
+                articles.forEach(article => {
+                    // Find the best content link within this article
+                    const allLinks = article.querySelectorAll('a[href]');
+                    let bestLink = null;
                     
-                    // SKIP comment links - these are not posts
-                    if (href.includes('comment_id=')) return;
-                    
-                    // SKIP generic navigation links (photos tab, videos tab, etc)
-                    const genericNav = /\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|likes|manage|collections)\/?(\?.*)?$/i;
-                    if (genericNav.test(href) && !href.includes('fbid=') && !href.includes('/posts/')) return;
-
-                    // Walk up the DOM to find a meaningful post container
-                    let el = link;
-                    let bestContainer = null;
-                    for (let i = 0; i < 15; i++) {
-                        el = el.parentElement;
-                        if (!el || el === document.body) break;
+                    allLinks.forEach(a => {
+                        const h = a.href || "";
+                        if (!h || h === "#") return;
+                        // Skip comment links
+                        if (h.includes('comment_id=')) return;
+                        // Skip generic navigation
+                        if (/\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|likes|manage|collections)\/?(\?.*)?$/i.test(h)) return;
                         
-                        const role = el.getAttribute('role');
-                        if (role === 'banner' || el.tagName === 'HEADER') break;
-                        
-                        if (role === 'article') {
-                            bestContainer = el;
-                            break;
+                        // Prefer specific post/video/reel links
+                        if (h.match(/\/(posts|reel|videos|permalink|story\.php|photo|watch)\//i) || h.includes('fbid=')) {
+                            if (!bestLink || h.includes('/posts/') || h.includes('/reel/') || h.includes('fbid=')) {
+                                bestLink = h;
+                            }
                         }
-                        
-                        const text = safeGetText(el);
-                        if (text.length > 80 && el.querySelectorAll('a, img, span').length > 3) {
-                            bestContainer = el;
-                        }
-                    }
+                    });
                     
-                    if (bestContainer && !candidates.has(href)) {
-                        candidates.set(href, { element: bestContainer, url: href });
+                    if (bestLink && !candidates.has(bestLink)) {
+                        candidates.set(bestLink, { element: article, url: bestLink });
                     }
                 });
 
-                // Fallback: role=article
+                // ============================================================
+                // STRATEGY 2 (FALLBACK): Link-first approach
+                // Only if articles found nothing
+                // ============================================================
                 if (candidates.size === 0) {
-                    document.querySelectorAll('div[role="article"]').forEach(article => {
-                        let bestLink = null;
-                        article.querySelectorAll('a[href]').forEach(a => {
-                            const h = a.href || "";
-                            if (h.includes('comment_id=')) return;
-                            if (h.match(/\/(posts|reel|videos|permalink|story\.php|photo|watch)\//i) || h.includes('fbid=')) {
-                                bestLink = h;
+                    console.log("Strategy 1 found nothing. Trying link-first...");
+                    const contentLinks = document.querySelectorAll(
+                        'a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"], ' +
+                        'a[href*="/permalink/"], a[href*="/story.php"], a[href*="fbid="], ' +
+                        'a[href*="/photo"], a[href*="/watch/"]'
+                    );
+
+                    contentLinks.forEach(link => {
+                        const href = link.href || "";
+                        if (!href || href === "#") return;
+                        if (href.includes('comment_id=')) return;
+                        
+                        const genericNav = /\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|likes|manage|collections)\/?(\?.*)?$/i;
+                        if (genericNav.test(href) && !href.includes('fbid=') && !href.includes('/posts/')) return;
+
+                        // Walk up to find the closest article or reasonable container
+                        let el = link;
+                        let bestContainer = null;
+                        for (let i = 0; i < 12; i++) {
+                            el = el.parentElement;
+                            if (!el || el === document.body) break;
+                            
+                            const role = el.getAttribute('role');
+                            if (role === 'banner' || role === 'navigation' || 
+                                role === 'main' || el.tagName === 'HEADER') break;
+                            
+                            if (role === 'article') {
+                                bestContainer = el;
+                                break;
                             }
-                        });
-                        if (bestLink && !candidates.has(bestLink)) {
-                            candidates.set(bestLink, { element: article, url: bestLink });
+                            
+                            // Reasonable container: has some text but NOT too much
+                            // (if it has > 5000 chars it's probably the whole page section)
+                            const text = safeGetText(el);
+                            if (text.length > 50 && text.length < 5000 && 
+                                el.querySelectorAll('a, img').length > 2) {
+                                bestContainer = el;
+                            }
+                        }
+                        
+                        if (bestContainer && !candidates.has(href)) {
+                            candidates.set(href, { element: bestContainer, url: href });
                         }
                     });
                 }
+
+                console.log("Total unique candidates: " + candidates.size);
 
                 // ============================================================
                 // EXTRACT DATA from each candidate
@@ -288,22 +311,34 @@ class FacebookPageScraper(FacebookBaseScraper):
                                   || postUrl.match(/fbid=([^&]+)/);
                     if (idMatch) post.id = idMatch[1];
 
-                    // Caption: try specific message containers, then fallback
-                    const msgEl = container.querySelector(
-                        '[data-ad-comet-preview="post_message"], ' +
-                        'div[data-ad-preview="message"], ' +
-                        'div[dir="auto"][style]'
-                    );
-                    if (msgEl) {
-                        post.caption = safeGetText(msgEl).substring(0, 500);
-                    } else {
-                        // Fallback: get text but try to exclude header noise
-                        let txt = safeGetText(container);
-                        txt = txt.replace(/.*?(?:seguidores|followers).*?(?:Seguir|Follow)\s*/is, '');
-                        post.caption = txt.substring(0, 500);
+                    // Caption: find message text within the article
+                    // Try multiple selectors for the actual post text
+                    let captionText = "";
+                    const msgSelectors = [
+                        '[data-ad-comet-preview="post_message"]',
+                        'div[data-ad-preview="message"]',
+                        'div[dir="auto"][style*="text-align"]',
+                        'div[dir="auto"]'
+                    ];
+                    
+                    for (const sel of msgSelectors) {
+                        const els = container.querySelectorAll(sel);
+                        for (const el of els) {
+                            const txt = safeGetText(el);
+                            // Skip if it looks like header/nav text
+                            if (txt.includes("seguidores") && txt.includes("Seguir")) continue;
+                            if (txt.includes("Información") && txt.includes("Fotos")) continue;
+                            if (txt.length > 10 && txt.length < 2000) {
+                                captionText = txt;
+                                break;
+                            }
+                        }
+                        if (captionText) break;
                     }
                     
-                    // Raw text for metric extraction in Python
+                    post.caption = captionText.substring(0, 500) || "";
+                    
+                    // Raw text for metric extraction
                     post.raw_text = safeGetText(container);
                     
                     // Aria labels (contain reaction/comment/share counts)
@@ -320,14 +355,25 @@ class FacebookPageScraper(FacebookBaseScraper):
                         post.post_date_raw = safeGetText(timeEl) || timeEl.getAttribute('title') || timeEl.getAttribute('datetime') || "";
                     }
 
-                    // Thumbnail - filter out profile pics and emojis, pick largest
-                    const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
-                        img.src && img.src.includes('fbcdn') && 
-                        !img.src.includes('emoji') &&
-                        (img.width > 100 || img.naturalWidth > 100)
-                    );
+                    // Thumbnail - find images WITHIN this article only
+                    // Filter out profile pics (small), emojis, and reaction icons
+                    const imgs = Array.from(container.querySelectorAll('img[src*="fbcdn"]')).filter(img => {
+                        const src = img.src || "";
+                        if (src.includes('emoji')) return false;
+                        if (src.includes('rsrc.php')) return false; // UI icons
+                        // Check if image is reasonably sized (not a tiny icon)
+                        const w = img.width || img.naturalWidth || 0;
+                        const h = img.height || img.naturalHeight || 0;
+                        return w > 50 || h > 50;
+                    });
+                    
                     if (imgs.length > 0) {
-                        imgs.sort((a, b) => (b.naturalWidth || b.width || 0) - (a.naturalWidth || a.width || 0));
+                        // Sort by size, pick largest (most likely the post image)
+                        imgs.sort((a, b) => {
+                            const aSize = (a.naturalWidth || a.width || 0) * (a.naturalHeight || a.height || 0);
+                            const bSize = (b.naturalWidth || b.width || 0) * (b.naturalHeight || b.height || 0);
+                            return bSize - aSize;
+                        });
                         post.thumbnail = imgs[0].src;
                     }
 
@@ -343,11 +389,9 @@ class FacebookPageScraper(FacebookBaseScraper):
 
                 const debugInfo = {
                     total_links_on_page: document.querySelectorAll('a[href]').length,
-                    total_divs: document.querySelectorAll('div').length,
+                    total_articles: articles.length,
                     has_role_main: document.querySelector('div[role="main"]') !== null,
-                    has_role_article: document.querySelectorAll('div[role="article"]').length,
                     page_title: document.title || "N/A",
-                    body_text_length: (document.body ? document.body.innerText || "" : "").length,
                 };
 
                 return {
@@ -371,30 +415,35 @@ class FacebookPageScraper(FacebookBaseScraper):
             scraped_data["page_info"] = page_info
             
             processed_posts = []
-            seen_urls = set()
+            seen_ids = set()
 
             for p in extracted_posts:
                 post_url = p.get("url")
-                if not post_url or post_url in seen_urls:
+                post_id = p.get("id")
+                if not post_url:
                     continue
                 
-                # Extra Python-side filter: skip comment links
+                # Skip comment links
                 if "comment_id=" in post_url:
                     continue
-                    
-                seen_urls.add(post_url)
+                
+                # Deduplicate by ID (same post can have multiple URL variants)
+                dedup_key = post_id or post_url
+                if dedup_key in seen_ids:
+                    continue
+                seen_ids.add(dedup_key)
 
-                # Use existing utility functions to parse metrics from gathered text
+                # Use existing utility functions to parse metrics
                 combined_text = (p.get("raw_text", "") + " " + " ".join(p.get("aria_labels", []))).lower()
                 
                 views_val = _extract_views_count_from_text(combined_text)
                 
                 metrics = {
                     "url": post_url,
-                    "id": p.get("id"),
+                    "id": post_id,
                     "type": p.get("type", "post"),
                     "thumbnail": p.get("thumbnail"),
-                    "caption": p.get("caption") or p.get("raw_text", "")[:200],
+                    "caption": p.get("caption") or "",
                     "post_date_raw": p.get("post_date_raw"),
                     "reactions": _extract_reactions_count_from_text(combined_text),
                     "comments": _extract_comments_count_from_text(combined_text),
