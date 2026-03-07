@@ -68,7 +68,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.3.1-DIAGNOSTIC",
+            "version": "1.3.2-COOKIES",
             "posts": [],
             "total_posts_found": 0,
             "_debug": {}
