@@ -23,8 +23,6 @@ class FacebookPageScraper(FacebookBaseScraper):
         if not self.page:
             return
         
-        # Helper to get the current scroll height safely
-        # Using document.scrollingElement as it is the most reliable modern way
         get_height_js = "() => (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight"
         
         try:
@@ -32,28 +30,31 @@ class FacebookPageScraper(FacebookBaseScraper):
         except Exception:
             last_height = 0
 
+        stale_count = 0
         for i in range(count):
             self.logger.info(f"Scrolling ({i+1}/{count})...")
             try:
-                # Use window.scrollTo which is usually more reliable
                 scroll_to_js = "window.scrollTo(0, (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight)"
                 await self.page.evaluate(scroll_to_js)
                 
-                # Wait for content to potentially load
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(2.5)
                 
                 new_height = await self.page.evaluate(get_height_js)
                 if new_height == last_height or new_height == 0:
-                    # Try one more wait if we might be on a slow load
-                    await asyncio.sleep(1.0)
+                    stale_count += 1
+                    await asyncio.sleep(2.0)
                     new_height = await self.page.evaluate(get_height_js)
                     if new_height == last_height:
-                        break
+                        if stale_count >= 2:
+                            self.logger.info("Height unchanged after 2 retries, stopping scroll.")
+                            break
+                        continue
+                else:
+                    stale_count = 0
                 
                 last_height = new_height
             except Exception as e:
                 self.logger.warning(f"Scroll step {i+1} failed: {e}")
-                # Don't break completely, try next scroll if just a timeout? No, probably a hard failure.
                 break
 
     async def run(self, url: str, **kwargs) -> Dict[str, Any]:
@@ -68,7 +69,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.3.3-RESILIENT",
+            "version": "1.3.4-STABLE",
             "page_info": {},
             "posts": [],
             "total_posts_found": 0,
@@ -85,7 +86,6 @@ class FacebookPageScraper(FacebookBaseScraper):
             # ---- NAVIGATE WITH RESILIENT STRATEGY ----
             self.logger.info(f"Navigating to Page: {url}")
             
-            # Attempt 1: Standard navigation
             page_loaded = False
             for attempt in range(3):
                 try:
@@ -98,17 +98,14 @@ class FacebookPageScraper(FacebookBaseScraper):
                         self.logger.warning("Attempt 2 failed. Trying with load wait...")
                         await self.page.goto(url, wait_until="load", timeout=60000)
                     
-                    # Brief wait for dynamic content
                     await asyncio.sleep(3.0)
                     
-                    # Check if page has meaningful content
                     content_length = await self.page.evaluate("() => document.body ? document.body.innerHTML.length : 0")
                     current_url = self.page.url or ""
                     page_title = await self.page.evaluate("() => document.title || ''")
                     
                     self.logger.info(f"Navigation attempt {attempt+1}: content_length={content_length}, url={current_url}, title={page_title}")
                     
-                    # Check for login redirect
                     if "login" in current_url.lower() or "checkpoint" in current_url.lower():
                         self.logger.warning(f"Redirected to login/checkpoint: {current_url}")
                         scraped_data["_debug"]["redirect_detected"] = current_url
@@ -185,7 +182,6 @@ class FacebookPageScraper(FacebookBaseScraper):
             page_html: str = await self.page.content()
             self.logger.info(f"Page content captured. Length: {len(page_html)} characters.")
             
-            # This JS script finds all post containers and extracts their basic info
             self.logger.info("Evaluating JavaScript to extract post containers...")
             posts = await self.page.evaluate(r"""() => {
                 const results = [];
@@ -193,18 +189,15 @@ class FacebookPageScraper(FacebookBaseScraper):
                     if(!e) return "";
                     try { return (e.innerText || e.textContent || "").trim(); } catch(ex) { return ""; }
                 };
-                console.log("V1.3.3_RESILIENT_EXTRACTION_START");
 
                 // ============================================================
                 // EXTRACT PAGE-LEVEL INFO (name, followers, category)
                 // ============================================================
                 const pageInfo = {};
                 try {
-                    // Page name: usually the first h1 or the profile name
                     const h1 = document.querySelector('h1');
                     if (h1) pageInfo.name = safeGetText(h1);
                     
-                    // Followers: look for text matching pattern like "216 mil seguidores" or "216K followers"
                     const allText = document.body ? (document.body.innerText || "") : "";
                     const followersMatch = allText.match(/(\d[\d.,]*\s*(?:mil|M|K|millones)?\s*(?:seguidores|followers))/i);
                     if (followersMatch) pageInfo.followers_text = followersMatch[1].trim();
@@ -212,45 +205,36 @@ class FacebookPageScraper(FacebookBaseScraper):
                     const followingMatch = allText.match(/(\d[\d.,]*\s*(?:seguidos|following))/i);
                     if (followingMatch) pageInfo.following_text = followingMatch[1].trim();
                     
-                    // Category
-                    const categoryEl = document.querySelector('div[data-pagelet="ProfileTilesFeed_0"] a, div[role="main"] span');
-                    // Try finding common category patterns
                     const catMatch = allText.match(/(Político\(a\)|Musician\/Band|Public Figure|Media\/News Company|Community|Interest|Entertainment Website|Sports Team)/i);
                     if (catMatch) pageInfo.category = catMatch[1];
                     
-                    // Verified badge
                     const verifiedBadge = document.querySelector('svg[aria-label*="verificada"], svg[aria-label*="Verified"]');
                     pageInfo.is_verified = !!verifiedBadge;
-                } catch(e) {
-                    console.log("Page info extraction error: " + e.message);
-                }
+                } catch(e) {}
 
                 // ============================================================
-                // STRATEGY 1: Link-first approach (most resilient)
-                // Find all links that point to FB content, then walk up to container
+                // FIND POST LINKS - filter out comments and generic nav links
                 // ============================================================
                 const contentLinks = document.querySelectorAll(
                     'a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"], ' +
                     'a[href*="/permalink/"], a[href*="/story.php"], a[href*="fbid="], ' +
                     'a[href*="/photo"], a[href*="/watch/"]'
                 );
-                console.log(`Found ${contentLinks.length} content links on page`);
 
-                const candidates = new Map(); // url -> container element
+                const candidates = new Map();
 
                 contentLinks.forEach(link => {
                     const href = link.href || "";
                     if (!href || href === "#") return;
                     
-                    // FILTER: Ignore common navigation links that aren't specific posts/media
-                    // Regex handles trailing slashes and query params robustly
-                    const genericUrlRegex = /\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|map|sports|music|movies|books|likes|manage|collections)\/?(\?.*)?$/i;
+                    // SKIP comment links - these are not posts
+                    if (href.includes('comment_id=')) return;
                     
-                    if (genericUrlRegex.test(href) && !href.includes('fbid=') && !href.includes('/posts/')) {
-                        return;
-                    }
+                    // SKIP generic navigation links (photos tab, videos tab, etc)
+                    const genericNav = /\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|likes|manage|collections)\/?(\?.*)?$/i;
+                    if (genericNav.test(href) && !href.includes('fbid=') && !href.includes('/posts/')) return;
 
-                    // Walk up the DOM to find a meaningful container
+                    // Walk up the DOM to find a meaningful post container
                     let el = link;
                     let bestContainer = null;
                     for (let i = 0; i < 15; i++) {
@@ -260,14 +244,12 @@ class FacebookPageScraper(FacebookBaseScraper):
                         const role = el.getAttribute('role');
                         if (role === 'banner' || el.tagName === 'HEADER') break;
                         
-                        const text = safeGetText(el);
-                        
                         if (role === 'article') {
                             bestContainer = el;
                             break;
                         }
                         
-                        // Heuristic for a container: enough text and some children
+                        const text = safeGetText(el);
                         if (text.length > 80 && el.querySelectorAll('a, img, span').length > 3) {
                             bestContainer = el;
                         }
@@ -278,16 +260,13 @@ class FacebookPageScraper(FacebookBaseScraper):
                     }
                 });
 
-                // ============================================================
-                // STRATEGY 2: Role-based fallback
-                // ============================================================
+                // Fallback: role=article
                 if (candidates.size === 0) {
-                    console.log("Strategy 1 found nothing. Trying role=article...");
                     document.querySelectorAll('div[role="article"]').forEach(article => {
-                        const links = article.querySelectorAll('a[href]');
                         let bestLink = null;
-                        links.forEach(a => {
+                        article.querySelectorAll('a[href]').forEach(a => {
                             const h = a.href || "";
+                            if (h.includes('comment_id=')) return;
                             if (h.match(/\/(posts|reel|videos|permalink|story\.php|photo|watch)\//i) || h.includes('fbid=')) {
                                 bestLink = h;
                             }
@@ -299,53 +278,35 @@ class FacebookPageScraper(FacebookBaseScraper):
                 }
 
                 // ============================================================
-                // STRATEGY 3: Pagelet-based fallback
-                // ============================================================
-                if (candidates.size === 0) {
-                    console.log("Strategy 2 found nothing. Trying data-pagelet...");
-                    const pagelets = document.querySelectorAll(
-                        'div[data-pagelet*="ProfileTimeline"], div[data-pagelet*="Feed"], ' +
-                        'div[data-pagelet*="Page"], div[role="main"]'
-                    );
-                    pagelets.forEach(pagelet => {
-                        pagelet.querySelectorAll('a[href]').forEach(link => {
-                            const h = link.href || "";
-                            if (h.match(/\/(posts|reel|videos|permalink|photo|watch)\//i) || h.includes('fbid=')) {
-                                if (!candidates.has(h)) {
-                                    let parent = link;
-                                    for (let i = 0; i < 8; i++) {
-                                        parent = parent.parentElement;
-                                        if (!parent) break;
-                                        if (safeGetText(parent).length > 50) {
-                                            candidates.set(h, { element: parent, url: h });
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    });
-                }
-
-                console.log(`Total unique candidates: ${candidates.size}`);
-
-                // ============================================================
                 // EXTRACT DATA from each candidate
                 // ============================================================
                 candidates.forEach(({ element: container, url: postUrl }) => {
                     const post = { url: postUrl };
                     
+                    // Extract post ID
                     const idMatch = postUrl.match(/\/(?:reel|videos|posts|permalink|story\.php|photo|watch)\/([^/?&]+)/) 
                                   || postUrl.match(/fbid=([^&]+)/);
                     if (idMatch) post.id = idMatch[1];
 
-                    // Caption: try specific post message container first, fallback to trimmed container text
-                    const msgEl = container.querySelector('[data-ad-comet-preview="post_message"], div[data-ad-preview="message"], div[id][dir="auto"], div[dir="auto"][style*="text-align"]');
-                    post.caption = msgEl ? safeGetText(msgEl) : safeGetText(container).substring(0, 500);
+                    // Caption: try specific message containers, then fallback
+                    const msgEl = container.querySelector(
+                        '[data-ad-comet-preview="post_message"], ' +
+                        'div[data-ad-preview="message"], ' +
+                        'div[dir="auto"][style]'
+                    );
+                    if (msgEl) {
+                        post.caption = safeGetText(msgEl).substring(0, 500);
+                    } else {
+                        // Fallback: get text but try to exclude header noise
+                        let txt = safeGetText(container);
+                        txt = txt.replace(/.*?(?:seguidores|followers).*?(?:Seguir|Follow)\s*/is, '');
+                        post.caption = txt.substring(0, 500);
+                    }
                     
-                    // Raw text for metric extraction
+                    // Raw text for metric extraction in Python
                     post.raw_text = safeGetText(container);
                     
+                    // Aria labels (contain reaction/comment/share counts)
                     const ariaLabels = [];
                     container.querySelectorAll('[aria-label]').forEach(el => {
                         const label = el.getAttribute('aria-label');
@@ -353,18 +314,24 @@ class FacebookPageScraper(FacebookBaseScraper):
                     });
                     post.aria_labels = ariaLabels;
 
+                    // Post date
                     const timeEl = container.querySelector('abbr[data-utime], time, span[id*="jsc_c"]');
                     if (timeEl) {
                         post.post_date_raw = safeGetText(timeEl) || timeEl.getAttribute('title') || timeEl.getAttribute('datetime') || "";
                     }
 
+                    // Thumbnail - filter out profile pics and emojis, pick largest
                     const imgs = Array.from(container.querySelectorAll('img')).filter(img => 
                         img.src && img.src.includes('fbcdn') && 
-                        !img.src.includes('profile') && !img.src.includes('emoji') &&
-                        (img.width > 50 || img.naturalWidth > 50)
+                        !img.src.includes('emoji') &&
+                        (img.width > 100 || img.naturalWidth > 100)
                     );
-                    if (imgs.length > 0) post.thumbnail = imgs[0].src;
+                    if (imgs.length > 0) {
+                        imgs.sort((a, b) => (b.naturalWidth || b.width || 0) - (a.naturalWidth || a.width || 0));
+                        post.thumbnail = imgs[0].src;
+                    }
 
+                    // Type detection
                     if (postUrl.includes('/reel/') || postUrl.includes('/videos/') || postUrl.includes('/watch/')) {
                         post.type = 'video';
                     } else {
@@ -374,7 +341,6 @@ class FacebookPageScraper(FacebookBaseScraper):
                     results.push(post);
                 });
 
-                // Diagnostic info
                 const debugInfo = {
                     total_links_on_page: document.querySelectorAll('a[href]').length,
                     total_divs: document.querySelectorAll('div').length,
@@ -411,12 +377,16 @@ class FacebookPageScraper(FacebookBaseScraper):
                 post_url = p.get("url")
                 if not post_url or post_url in seen_urls:
                     continue
+                
+                # Extra Python-side filter: skip comment links
+                if "comment_id=" in post_url:
+                    continue
+                    
                 seen_urls.add(post_url)
 
                 # Use existing utility functions to parse metrics from gathered text
                 combined_text = (p.get("raw_text", "") + " " + " ".join(p.get("aria_labels", []))).lower()
                 
-                # Check for views in this specific post's text
                 views_val = _extract_views_count_from_text(combined_text)
                 
                 metrics = {
@@ -424,7 +394,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                     "id": p.get("id"),
                     "type": p.get("type", "post"),
                     "thumbnail": p.get("thumbnail"),
-                    "caption": p.get("caption") or p.get("raw_text", "")[:200], # Fallback
+                    "caption": p.get("caption") or p.get("raw_text", "")[:200],
                     "post_date_raw": p.get("post_date_raw"),
                     "reactions": _extract_reactions_count_from_text(combined_text),
                     "comments": _extract_comments_count_from_text(combined_text),
@@ -466,7 +436,6 @@ class FacebookPageScraper(FacebookBaseScraper):
 
         except Exception as e:
             self.logger.error(f"FacebookPageScraper failed: {str(e)}", exc_info=True)
-            # DUMP HTML FOR ANALYSIS if it fails or returns 0
             try:
                 html = await self.page.content()
                 from pathlib import Path
