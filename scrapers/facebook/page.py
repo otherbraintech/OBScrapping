@@ -91,6 +91,14 @@ class FacebookPageScraper(FacebookBaseScraper):
                 self.logger.info("Detected Reels/Videos tab, waiting extra time for grid...")
                 await asyncio.sleep(5.0)
 
+            # --- EMPTY CONTENT RETRY ---
+            content_check = await self.page.content()
+            if len(content_check) < 1000:
+                self.logger.warning(f"Initial load produced very little content ({len(content_check)} bytes). Retrying once...")
+                await asyncio.sleep(3.0)
+                await self.page.reload(wait_until="networkidle", timeout=60000)
+                await asyncio.sleep(2.0)
+
             # Wait for main content or posts to appear
             self.logger.info("Waiting for page content to load...")
             try:
@@ -291,8 +299,9 @@ class FacebookPageScraper(FacebookBaseScraper):
             if len(processed_posts) == 0:
                 self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug.")
                 scraped_data["_debug"]["full_html"] = await self.page.content()
-            else:
-                self.logger.info(f"Page extraction successful. Found {len(processed_posts)} unique items.")
+                return self.format_error(f"No posts found on the page. HTML size: {len(scraped_data['_debug']['full_html'])} bytes.")
+
+            self.logger.info(f"Page extraction successful. Found {len(processed_posts)} unique items.")
 
             return {
                 "status": "success",

@@ -219,24 +219,30 @@ async def run_scraper(
                     db_request.status = result.get("status")
                     db_request.updated_at = datetime.utcnow()
                     
-                    # 3. Crear el resultado detallado
-                    db_result = DBScrapeResult(
-                        id=str(uuid.uuid4()),
-                        content_type=clean_result.get("content_type"),
-                        reactions=clean_result.get("reactions_count", 0),
-                        comments=clean_result.get("comments_count", 0),
-                        shares=clean_result.get("shares_count", 0),
-                        views=clean_result.get("views_count", 0),
-                        error=clean_result.get("error"),
-                        scraped_at=datetime.fromisoformat(str(result.get("scraped_at"))),
-                        raw_data=persistence_data,
-                        full_html=persistence_data.get("_debug", {}).get("full_html"),
-                        request_id=db_request.id
-                    )
+                    # 3. Buscar o crear el resultado detallado (Upsert)
+                    db_result = db.query(DBScrapeResult).filter(DBScrapeResult.request_id == db_request.id).first()
                     
-                    db.add(db_result)
+                    if not db_result:
+                        db_result = DBScrapeResult(
+                            id=str(uuid.uuid4()),
+                            request_id=db_request.id
+                        )
+                        db.add(db_result)
+                    
+                    # Actualizar campos
+                    db_result.content_type = clean_result.get("content_type")
+                    db_result.reactions = clean_result.get("reactions_count", 0)
+                    db_result.comments = clean_result.get("comments_count", 0)
+                    db_result.shares = clean_result.get("shares_count", 0)
+                    db_result.views = clean_result.get("views_count", 0)
+                    db_result.error = clean_result.get("error")
+                    db_result.scraped_at = datetime.fromisoformat(str(result.get("scraped_at")))
+                    db_result.raw_data = persistence_data
+                    db_result.full_html = persistence_data.get("_debug", {}).get("full_html")
+                    db_result.created_at = datetime.utcnow() # Update timestamp to now
+
                     db.commit()
-                    task_logger.info("Datos guardados exitosamente en la base de datos.")
+                    task_logger.info("Datos guardados exitosamente en la base de datos (Upsert).")
                 else:
                     task_logger.warning(f"No se encontró ScrapeRequest para task_id {task_id}")
                 
