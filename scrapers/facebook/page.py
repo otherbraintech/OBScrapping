@@ -100,11 +100,14 @@ class FacebookPageScraper(FacebookBaseScraper):
 
             # --- EMPTY CONTENT RETRY ---
             content_check = await self.page.content()
+            self.logger.info(f"Check 1: Length={len(content_check)} bytes for URL={self.page.url}")
             if len(content_check) < 1000:
                 self.logger.warning(f"Initial load produced very little content ({len(content_check)} bytes). Retrying once...")
                 await asyncio.sleep(3.0)
-                await self.page.reload(wait_until="networkidle", timeout=60000)
-                await asyncio.sleep(2.0)
+                await self.page.reload(wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(3.0)
+                content_check = await self.page.content()
+                self.logger.info(f"Check 2 (Retry): Length={len(content_check)} bytes")
 
             # Wait for main content or posts to appear
             self.logger.info("Waiting for page content to load...")
