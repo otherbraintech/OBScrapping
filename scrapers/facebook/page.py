@@ -257,12 +257,11 @@ class FacebookPageScraper(FacebookBaseScraper):
                         el = el.parentElement;
                         if (!el || el === document.body) break;
                         
-                        // SKIP: If we hit a container with profile header keywords, top - this isn't a post
+                        const role = el.getAttribute('role');
+                        if (role === 'banner' || el.tagName === 'HEADER') break;
+                        
                         const text = safeGetText(el);
-                        if (text.includes("Seguidores") || text.includes("Mensaje") || text.includes("Seguir") || text.includes(" Político(a)")) {
-                             break;
-                        }
-
+                        
                         if (role === 'article') {
                             bestContainer = el;
                             break;
