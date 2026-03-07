@@ -68,7 +68,8 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.3.2-COOKIES",
+            "version": "1.3.3-RESILIENT",
+            "page_info": {},
             "posts": [],
             "total_posts_found": 0,
             "_debug": {}
@@ -192,7 +193,37 @@ class FacebookPageScraper(FacebookBaseScraper):
                     if(!e) return "";
                     try { return (e.innerText || e.textContent || "").trim(); } catch(ex) { return ""; }
                 };
-                console.log("V1.3.0_RESILIENT_EXTRACTION_START");
+                console.log("V1.3.3_RESILIENT_EXTRACTION_START");
+
+                // ============================================================
+                // EXTRACT PAGE-LEVEL INFO (name, followers, category)
+                // ============================================================
+                const pageInfo = {};
+                try {
+                    // Page name: usually the first h1 or the profile name
+                    const h1 = document.querySelector('h1');
+                    if (h1) pageInfo.name = safeGetText(h1);
+                    
+                    // Followers: look for text matching pattern like "216 mil seguidores" or "216K followers"
+                    const allText = document.body ? (document.body.innerText || "") : "";
+                    const followersMatch = allText.match(/(\d[\d.,]*\s*(?:mil|M|K|millones)?\s*(?:seguidores|followers))/i);
+                    if (followersMatch) pageInfo.followers_text = followersMatch[1].trim();
+                    
+                    const followingMatch = allText.match(/(\d[\d.,]*\s*(?:seguidos|following))/i);
+                    if (followingMatch) pageInfo.following_text = followingMatch[1].trim();
+                    
+                    // Category
+                    const categoryEl = document.querySelector('div[data-pagelet="ProfileTilesFeed_0"] a, div[role="main"] span');
+                    // Try finding common category patterns
+                    const catMatch = allText.match(/(Político\(a\)|Musician\/Band|Public Figure|Media\/News Company|Community|Interest|Entertainment Website|Sports Team)/i);
+                    if (catMatch) pageInfo.category = catMatch[1];
+                    
+                    // Verified badge
+                    const verifiedBadge = document.querySelector('svg[aria-label*="verificada"], svg[aria-label*="Verified"]');
+                    pageInfo.is_verified = !!verifiedBadge;
+                } catch(e) {
+                    console.log("Page info extraction error: " + e.message);
+                }
 
                 // ============================================================
                 // STRATEGY 1: Link-first approach (most resilient)
@@ -308,22 +339,20 @@ class FacebookPageScraper(FacebookBaseScraper):
                     const idMatch = postUrl.match(/\/(?:reel|videos|posts|permalink|story\.php|photo|watch)\/([^/?&]+)/) 
                                   || postUrl.match(/fbid=([^&]+)/);
                     if (idMatch) post.id = idMatch[1];
-                    // Specific targeting for caption to avoid metadata noise
-                    const captionEl = container.querySelector('[data-ad-comet-preview="post_message"]');
-                    post.caption = captionEl ? safeGetText(captionEl) : safeGetText(container).substring(0, 500);
+
+                    // Caption: try specific post message container first, fallback to trimmed container text
+                    const msgEl = container.querySelector('[data-ad-comet-preview="post_message"], div[data-ad-preview="message"], div[id][dir="auto"], div[dir="auto"][style*="text-align"]');
+                    post.caption = msgEl ? safeGetText(msgEl) : safeGetText(container).substring(0, 500);
                     
-                    const reactionsEl = container.querySelector('span[role="toolbar"]'); // This line was added, but not used in the snippet. Keeping it as is.
+                    // Raw text for metric extraction
+                    post.raw_text = safeGetText(container);
+                    
                     const ariaLabels = [];
                     container.querySelectorAll('[aria-label]').forEach(el => {
                         const label = el.getAttribute('aria-label');
                         if (label && label.length < 200) ariaLabels.push(label);
                     });
                     post.aria_labels = ariaLabels;
-
-                    const captionEl = container.querySelector(
-                        'div[id][dir="auto"], div[data-ad-preview="message"], div[dir="auto"][style*="text-align"]'
-                    );
-                    if (captionEl) post.caption = safeGetText(captionEl);
 
                     const timeEl = container.querySelector('abbr[data-utime], time, span[id*="jsc_c"]');
                     if (timeEl) {
@@ -359,6 +388,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                 return {
                     posts: results,
                     total_candidates: candidates.size,
+                    page_info: pageInfo,
                     _extraction_debug: debugInfo
                 };
             }""")
@@ -368,9 +398,12 @@ class FacebookPageScraper(FacebookBaseScraper):
             extracted_posts = raw_result.get("posts", [])
             total_candidates = raw_result.get("total_candidates", 0)
             extraction_debug = raw_result.get("_extraction_debug", {})
+            page_info = raw_result.get("page_info", {})
             self.logger.info(f"JS Search found {total_candidates} candidates and {len(extracted_posts)} formatted posts.")
             self.logger.info(f"Extraction diagnostics: {extraction_debug}")
+            self.logger.info(f"Page info: {page_info}")
             scraped_data["_debug"]["extraction_debug"] = extraction_debug
+            scraped_data["page_info"] = page_info
             
             processed_posts = []
             seen_urls = set()
