@@ -212,13 +212,12 @@ class FacebookPageScraper(FacebookBaseScraper):
                     if (!href || href === "#") return;
                     
                     // FILTER: Ignore common navigation links that aren't specific posts/media
-                    const isGeneric = href.endsWith('/photos/') || href.endsWith('/photos') ||
-                                    href.endsWith('/videos/') || href.endsWith('/videos') ||
-                                    href.endsWith('/about/') || href.endsWith('/about') ||
-                                    href.endsWith('/community/') || href.endsWith('/community') ||
-                                    href.endsWith('/reels/') || href.endsWith('/reels');
+                    // Regex handles trailing slashes and query params robustly
+                    const genericUrlRegex = /\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|map|sports|music|movies|books|likes|manage|collections)\/?(\?.*)?$/i;
                     
-                    if (isGeneric && !href.includes('fbid=') && !href.includes('/posts/')) return;
+                    if (genericUrlRegex.test(href) && !href.includes('fbid=') && !href.includes('/posts/')) {
+                        return;
+                    }
 
                     // Walk up the DOM to find a meaningful container
                     let el = link;
@@ -227,12 +226,12 @@ class FacebookPageScraper(FacebookBaseScraper):
                         el = el.parentElement;
                         if (!el || el === document.body) break;
                         
-                        // SKIP: If we hit the main header banner, stop - this isn't a post
-                        const role = el.getAttribute('role');
-                        if (role === 'banner' || el.tagName === 'HEADER') break;
-
+                        // SKIP: If we hit a container with profile header keywords, top - this isn't a post
                         const text = safeGetText(el);
-                        
+                        if (text.includes("Seguidores") || text.includes("Mensaje") || text.includes("Seguir") || text.includes(" Político(a)")) {
+                             break;
+                        }
+
                         if (role === 'article') {
                             bestContainer = el;
                             break;
@@ -309,9 +308,11 @@ class FacebookPageScraper(FacebookBaseScraper):
                     const idMatch = postUrl.match(/\/(?:reel|videos|posts|permalink|story\.php|photo|watch)\/([^/?&]+)/) 
                                   || postUrl.match(/fbid=([^&]+)/);
                     if (idMatch) post.id = idMatch[1];
+                    // Specific targeting for caption to avoid metadata noise
+                    const captionEl = container.querySelector('[data-ad-comet-preview="post_message"]');
+                    post.caption = captionEl ? safeGetText(captionEl) : safeGetText(container).substring(0, 500);
                     
-                    post.raw_text = safeGetText(container);
-                    
+                    const reactionsEl = container.querySelector('span[role="toolbar"]'); // This line was added, but not used in the snippet. Keeping it as is.
                     const ariaLabels = [];
                     container.querySelectorAll('[aria-label]').forEach(el => {
                         const label = el.getAttribute('aria-label');
