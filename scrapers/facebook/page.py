@@ -83,7 +83,14 @@ class FacebookPageScraper(FacebookBaseScraper):
 
             # ---- NAVIGATE ----
             self.logger.info(f"Navigating to Page: {url}")
-            await self.page.goto(url, wait_until="networkidle", timeout=60000)
+            try:
+                # Wait for basic HTML structure first
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                self.logger.info("DOM content loaded, waiting for network to settle (optional)...")
+                # Wait briefly for network, but don't hang if it's busy
+                await self.page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception as e:
+                self.logger.warning(f"Navigation wait partially timed out or failed: {e}. Proceeding with current state.")
             
             # Additional wait for Reels/Videos tabs which are slower
             is_reels = "/reels/" in url.lower() or "/videos/" in url.lower()

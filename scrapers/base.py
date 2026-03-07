@@ -55,11 +55,17 @@ class BaseScraper(ABC):
             await stealth_async(self.page)
 
             # --- DIAGNOSTIC RESPONSES ---
-            def handle_response(response):
-                if response.url == self.page.url:
-                    self.logger.info(f"[NET] Main response status: {response.status} for {response.url}")
+            async def handle_response(response):
+                try:
+                    # Log status for the main page navigation
+                    if response.request.resource_type == "document" and response.status >= 300:
+                        self.logger.warning(f"[NET] Non-200 response: {response.status} {response.status_text} for {response.url}")
+                    elif response.url == self.page.url:
+                        self.logger.info(f"[NET] Main response status: {response.status} for {response.url}")
+                except Exception:
+                    pass
             
-            self.page.on("response", handle_response)
+            self.page.on("response", lambda r: asyncio.create_task(handle_response(r)))
 
             self.logger.info("Browser and page ready with stealth and network logging.")
         except Exception as e:
