@@ -75,7 +75,7 @@ class FacebookPageScraper(FacebookBaseScraper):
         }
 
         if not self.page:
-            return self.format_error("Browser not initialized")
+            return self.format_error("Browser not initialized", data=scraped_data)
 
         try:
             # ---- INJECT COOKIES ----
@@ -111,7 +111,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             # ---- CHECK FOR BLOCKS ----
             restriction_msg = await self.check_restricted()
             if restriction_msg:
-                return self.format_error(restriction_msg)
+                return self.format_error(restriction_msg, data=scraped_data)
 
             # ---- SCROLL TO LOAD DATA ----
             await self._scroll_page(scroll_count)
@@ -299,7 +299,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             if len(processed_posts) == 0:
                 self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug.")
                 scraped_data["_debug"]["full_html"] = await self.page.content()
-                return self.format_error(f"No posts found on the page. HTML size: {len(scraped_data['_debug']['full_html'])} bytes.")
+                return self.format_error(f"No posts found on the page. HTML size: {len(scraped_data['_debug']['full_html'])} bytes.", data=scraped_data)
 
             self.logger.info(f"Page extraction successful. Found {len(processed_posts)} unique items.")
 
@@ -323,4 +323,4 @@ class FacebookPageScraper(FacebookBaseScraper):
                 self.logger.info(f"Raw HTML dumped to {dump_path}")
             except:
                 pass
-            return self.format_error(str(e))
+            return self.format_error(str(e), data=scraped_data)

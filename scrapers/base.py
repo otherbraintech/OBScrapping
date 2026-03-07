@@ -47,13 +47,21 @@ class BaseScraper(ABC):
             if user_agent:
                 context_kwargs["user_agent"] = user_agent
             else:
-                context_kwargs["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                context_kwargs["user_agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
                 
             self.context = await self.browser.new_context(**context_kwargs)
             self.page = await self.context.new_page()
             # Apply stealth
             await stealth_async(self.page)
-            self.logger.info("Browser and page ready with stealth.")
+
+            # --- DIAGNOSTIC RESPONSES ---
+            def handle_response(response):
+                if response.url == self.page.url:
+                    self.logger.info(f"[NET] Main response status: {response.status} for {response.url}")
+            
+            self.page.on("response", handle_response)
+
+            self.logger.info("Browser and page ready with stealth and network logging.")
         except Exception as e:
             self.logger.error(f"Browser setup failed: {e}")
             await self.close()
@@ -71,9 +79,10 @@ class BaseScraper(ABC):
             await self.playwright.stop()
         self.logger.info("Browser closed.")
 
-    def format_error(self, message: str) -> Dict[str, Any]:
+    def format_error(self, message: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {
             "status": "error",
             "task_id": self.task_id,
-            "message": message
+            "message": message,
+            "data": data or {}
         }

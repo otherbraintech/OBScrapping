@@ -99,7 +99,7 @@ class FacebookReelScraper(FacebookBaseScraper):
         }
 
         if not self.page:
-            return self.format_error("Browser not initialized")
+            return self.format_error("Browser not initialized", data=scraped_data)
 
         try:
             # ---- INJECT COOKIES before navigation ----
@@ -119,7 +119,7 @@ class FacebookReelScraper(FacebookBaseScraper):
             # ---- CHECK FOR HARD BLOCK ----
             restriction_msg = await self.check_restricted()
             if restriction_msg:
-                return self.format_error(restriction_msg)
+                return self.format_error(restriction_msg, data=scraped_data)
 
             # ---- SCROLL to trigger lazy loading ----
             await self._scroll_page()
@@ -800,4 +800,4 @@ class FacebookReelScraper(FacebookBaseScraper):
 
         except Exception as e:
             self.logger.error(f"FacebookReelScraper failed: {str(e)}", exc_info=True)
-            return self.format_error(str(e))
+            return self.format_error(str(e), data=scraped_data)
