@@ -210,6 +210,15 @@ class FacebookPageScraper(FacebookBaseScraper):
                 contentLinks.forEach(link => {
                     const href = link.href || "";
                     if (!href || href === "#") return;
+                    
+                    // FILTER: Ignore common navigation links that aren't specific posts/media
+                    const isGeneric = href.endsWith('/photos/') || href.endsWith('/photos') ||
+                                    href.endsWith('/videos/') || href.endsWith('/videos') ||
+                                    href.endsWith('/about/') || href.endsWith('/about') ||
+                                    href.endsWith('/community/') || href.endsWith('/community') ||
+                                    href.endsWith('/reels/') || href.endsWith('/reels');
+                    
+                    if (isGeneric && !href.includes('fbid=') && !href.includes('/posts/')) return;
 
                     // Walk up the DOM to find a meaningful container
                     let el = link;
@@ -218,7 +227,10 @@ class FacebookPageScraper(FacebookBaseScraper):
                         el = el.parentElement;
                         if (!el || el === document.body) break;
                         
+                        // SKIP: If we hit the main header banner, stop - this isn't a post
                         const role = el.getAttribute('role');
+                        if (role === 'banner' || el.tagName === 'HEADER') break;
+
                         const text = safeGetText(el);
                         
                         if (role === 'article') {
@@ -226,6 +238,7 @@ class FacebookPageScraper(FacebookBaseScraper):
                             break;
                         }
                         
+                        // Heuristic for a container: enough text and some children
                         if (text.length > 80 && el.querySelectorAll('a, img, span').length > 3) {
                             bestContainer = el;
                         }
