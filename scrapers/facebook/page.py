@@ -18,192 +18,9 @@ class FacebookPageScraper(FacebookBaseScraper):
     It scrolls through the page and captures engagement data for multiple posts/reels.
     """
 
-    async def _scroll_page(self, count=10):
-        """Scroll multiple times to load more posts. Uses progressive delays and
-        multiple stale-height retries before giving up."""
-        if not self.page:
-            return
-        
-        get_height_js = "() => (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight"
-        
-        try:
-            last_height = await self.page.evaluate(get_height_js)
-        except Exception:
-            last_height = 0
-
-        stale_count = 0
-        for i in range(count):
-            self.logger.info(f"Scrolling ({i+1}/{count})... current height={last_height}")
-            try:
-                # Scroll to bottom
-                scroll_to_js = "window.scrollTo(0, (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight)"
-                await self.page.evaluate(scroll_to_js)
-                
-                # Wait for new content to load (longer for later scrolls)
-                base_wait = 3.5 if i < 5 else 4.5
-                await asyncio.sleep(base_wait)
-                
-                new_height = await self.page.evaluate(get_height_js)
-                if new_height == last_height or new_height == 0:
-                    stale_count += 1
-                    self.logger.info(f"Height stale (attempt {stale_count}/4), waiting extra...")
-                    # Progressive back-off: wait longer each stale attempt
-                    await asyncio.sleep(2.0 + stale_count)
-                    # Try a small scroll up then back down to trigger lazy loading
-                    await self.page.evaluate("window.scrollBy(0, -300)")
-                    await asyncio.sleep(1.0)
-                    await self.page.evaluate(scroll_to_js)
-                    await asyncio.sleep(2.0)
-                    new_height = await self.page.evaluate(get_height_js)
-                    if new_height == last_height:
-                        if stale_count >= 4:
-                            self.logger.info("Height unchanged after 4 retries, stopping scroll.")
-                            break
-                        continue
-                    else:
-                        self.logger.info(f"Scroll trick worked! New height: {new_height}")
-                        stale_count = 0
-                else:
-                    stale_count = 0
-                
-                last_height = new_height
-            except Exception as e:
-                self.logger.warning(f"Scroll step {i+1} failed: {e}")
-                break
-
-    async def run(self, url: str, **kwargs) -> Dict[str, Any]:
-        self.logger.info(f"Running FacebookPageScraper for {url}")
-
-        scroll_count: int = kwargs.get("scroll_count", 10)
-        extra_wait: float = kwargs.get("extra_wait_seconds", 3.0)
-        dump_all: bool = kwargs.get("dump_all", False)
-
-        scraped_data: Dict[str, Any] = {
-            "task_id": self.task_id,
-            "requested_url": url,
-            "scraped_at": datetime.utcnow().isoformat(),
-            "content_type": "page_feed",
-            "version": "1.5.1-FEED-FIX",
-            "page_info": {},
-            "posts": [],
-            "total_posts_found": 0,
-            "_debug": {}
-        }
-
-        if not self.page:
-            return self.format_error("Browser not initialized", data=scraped_data)
-
-        try:
-            # ---- INJECT COOKIES ----
-            await self.inject_cookies()
-
-            # ---- NAVIGATE WITH RESILIENT STRATEGY ----
-            self.logger.info(f"Navigating to Page: {url}")
-            
-            page_loaded = False
-            for attempt in range(3):
-                try:
-                    if attempt == 0:
-                        await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    elif attempt == 1:
-                        self.logger.warning("Attempt 1 failed or empty. Retrying with reload...")
-                        await self.page.reload(wait_until="domcontentloaded", timeout=45000)
-                    else:
-                        self.logger.warning("Attempt 2 failed. Trying with load wait...")
-                        await self.page.goto(url, wait_until="load", timeout=60000)
-                    
-                    await asyncio.sleep(3.0)
-                    
-                    content_length = await self.page.evaluate("() => document.body ? document.body.innerHTML.length : 0")
-                    current_url = self.page.url or ""
-                    page_title = await self.page.evaluate("() => document.title || ''")
-                    
-                    self.logger.info(f"Navigation attempt {attempt+1}: content_length={content_length}, url={current_url}, title={page_title}")
-                    
-                    if "login" in current_url.lower() or "checkpoint" in current_url.lower():
-                        self.logger.warning(f"Redirected to login/checkpoint: {current_url}")
-                        scraped_data["_debug"]["redirect_detected"] = current_url
-                        break
-                    
-                    if content_length > 5000:
-                        page_loaded = True
-                        self.logger.info(f"Page loaded successfully on attempt {attempt+1}")
-                        break
-                    else:
-                        self.logger.warning(f"Page seems empty on attempt {attempt+1} ({content_length} bytes)")
-                        await asyncio.sleep(3.0)
-                        
-                except Exception as nav_err:
-                    self.logger.warning(f"Navigation attempt {attempt+1} error: {nav_err}")
-                    await asyncio.sleep(2.0)
-
-            # Capture pre-extraction diagnostics
-            pre_check = await self.page.evaluate(r"""() => {
-                return {
-                    url: window.location.href,
-                    title: document.title,
-                    body_length: document.body ? document.body.innerHTML.length : 0,
-                    body_text_length: document.body ? (document.body.innerText || '').length : 0,
-                    has_role_main: !!document.querySelector('div[role="main"]'),
-                    has_articles: document.querySelectorAll('div[role="article"]').length,
-                    total_links: document.querySelectorAll('a[href]').length,
-                    total_images: document.querySelectorAll('img').length,
-                    has_login_form: !!document.querySelector('form[action*="login"]'),
-                    fb_content_links: document.querySelectorAll('a[href*="/posts/"], a[href*="/reel/"], a[href*="/videos/"]').length,
-                };
-            }""")
-            self.logger.info(f"Pre-extraction diagnostics: {pre_check}")
-            scraped_data["_debug"]["pre_check"] = pre_check
-
-            if not page_loaded:
-                body_length = pre_check.get("body_length", 0)
-                if body_length < 1000:
-                    scraped_data["_debug"]["full_html"] = await self.page.content()
-                    return self.format_error(
-                        f"Facebook returned an empty or minimal page ({body_length} bytes). "
-                        f"This usually means: (1) cookies expired, (2) IP is blocked, or (3) the page requires login. "
-                        f"Current URL: {pre_check.get('url', 'unknown')}. Title: {pre_check.get('title', 'unknown')}.",
-                        data=scraped_data
-                    )
-            
-            # ---- DISMISS LOGIN POPUPS ----
-            await self.dismiss_login_banner()
-
-            # Additional wait for Reels/Videos tabs which are slower
-            is_reels = "/reels/" in url.lower() or "/videos/" in url.lower()
-            if is_reels:
-                self.logger.info("Detected Reels/Videos tab, waiting extra time for grid...")
-                await asyncio.sleep(5.0)
-
-            # Wait for main content to appear (soft wait)
-            self.logger.info("Waiting for page content selectors...")
-            try:
-                await self.page.wait_for_selector('div[role="main"], div[role="article"], a[href*="/posts/"], a[href*="/reel/"]', timeout=20000)
-                self.logger.info("Content selector found, waiting for feed to populate...")
-            except Exception:
-                self.logger.warning("Content selectors not found within timeout, proceeding anyway...")
-            
-            # Give extra time for the feed to fully render before scrolling
-            await asyncio.sleep(max(extra_wait, 5.0))
-            
-            # Check how many articles are already visible before scrolling
-            pre_scroll_articles = await self.page.evaluate('() => document.querySelectorAll(\'div[role="article"]\').length')
-            self.logger.info(f"Articles visible before scrolling: {pre_scroll_articles}")
-
-            # ---- CHECK FOR BLOCKS ----
-            restriction_msg = await self.check_restricted()
-            if restriction_msg:
-                return self.format_error(restriction_msg, data=scraped_data)
-
-            # ---- SCROLL TO LOAD DATA ----
-            await self._scroll_page(scroll_count)
-
-            # ---- EXTRACT POSTS DATA ----
-            page_html: str = await self.page.content()
-            self.logger.info(f"Page content captured. Length: {len(page_html)} characters.")
-            
-            self.logger.info("Evaluating JavaScript to extract post containers...")
-            posts = await self.page.evaluate(r"""() => {
+    def _get_extraction_js(self) -> str:
+        """Returns the giant JavaScript string used for page extraction."""
+        return r"""() => {
                 const results = [];
                 const safeGetText = (e) => {
                     if(!e) return "";
@@ -249,8 +66,6 @@ class FacebookPageScraper(FacebookBaseScraper):
                         if (!p || p === document.body) break;
                         const role = p.getAttribute('role');
                         const label = (p.getAttribute('aria-label') || "").toLowerCase();
-                        // complementary = sidebars (where live chats live)
-                        // generic containers with "comentarios" or "chat" labels
                         if (role === 'complementary' || label.includes('comentarios') || label.includes('comments') || label.includes('chat')) {
                             isWithinNoise = true;
                             break;
@@ -259,19 +74,15 @@ class FacebookPageScraper(FacebookBaseScraper):
                     }
                     if (isWithinNoise) return;
 
-                    // Find the best content link within this article
                     const allLinks = article.querySelectorAll('a[href]');
                     let bestLink = null;
                     
                     allLinks.forEach(a => {
                         const h = a.href || "";
                         if (!h || h === "#") return;
-                        // Skip comment links
                         if (h.includes('comment_id=')) return;
-                        // Skip generic navigation
                         if (/\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|likes|manage|collections)\/?(\?.*)?$/i.test(h)) return;
                         
-                        // Prefer specific post/video/reel links
                         if (h.match(/\/(posts|reel|videos|permalink|story\.php|photo|watch)\//i) || h.includes('fbid=')) {
                             if (!bestLink || h.includes('/posts/') || h.includes('/reel/') || h.includes('fbid=')) {
                                 bestLink = h;
@@ -286,7 +97,6 @@ class FacebookPageScraper(FacebookBaseScraper):
 
                 // ============================================================
                 // STRATEGY 2 (FALLBACK): Link-first approach
-                // Only if articles found nothing
                 // ============================================================
                 if (candidates.size === 0) {
                     console.log("Strategy 1 found nothing. Trying link-first...");
@@ -304,7 +114,6 @@ class FacebookPageScraper(FacebookBaseScraper):
                         const genericNav = /\/(photos|videos|about|community|reels|friends|groups|events|mentions|reviews|likes|manage|collections)\/?(\?.*)?$/i;
                         if (genericNav.test(href) && !href.includes('fbid=') && !href.includes('/posts/')) return;
 
-                        // Walk up to find the closest article or reasonable container
                         let el = link;
                         let bestContainer = null;
                         for (let i = 0; i < 12; i++) {
@@ -320,8 +129,6 @@ class FacebookPageScraper(FacebookBaseScraper):
                                 break;
                             }
                             
-                            // Reasonable container: has some text but NOT too much
-                            // (if it has > 5000 chars it's probably the whole page section)
                             const text = safeGetText(el);
                             if (text.length > 50 && text.length < 5000 && 
                                 el.querySelectorAll('a, img').length > 2) {
@@ -335,21 +142,12 @@ class FacebookPageScraper(FacebookBaseScraper):
                     });
                 }
 
-                console.log("Total unique candidates: " + candidates.size);
-
-                // ============================================================
-                // EXTRACT DATA from each candidate
-                // ============================================================
                 candidates.forEach(({ element: container, url: postUrl }) => {
                     const post = { url: postUrl };
-                    
-                    // Extract post ID
                     const idMatch = postUrl.match(/\/(?:reel|videos|posts|permalink|story\.php|photo|watch)\/([^/?&]+)/) 
                                   || postUrl.match(/fbid=([^&]+)/);
                     if (idMatch) post.id = idMatch[1];
 
-                    // Caption: find message text within the article
-                    // Try multiple selectors for the actual post text
                     let captionText = "";
                     const msgSelectors = [
                         '[data-ad-comet-preview="post_message"]',
@@ -362,7 +160,6 @@ class FacebookPageScraper(FacebookBaseScraper):
                         const els = container.querySelectorAll(sel);
                         for (const el of els) {
                             const txt = safeGetText(el);
-                            // Skip if it looks like header/nav text
                             if (txt.includes("seguidores") && txt.includes("Seguir")) continue;
                             if (txt.includes("Información") && txt.includes("Fotos")) continue;
                             if (txt.length > 10 && txt.length < 2000) {
@@ -374,11 +171,8 @@ class FacebookPageScraper(FacebookBaseScraper):
                     }
                     
                     post.caption = captionText.substring(0, 500) || "";
-                    
-                    // Raw text for metric extraction
                     post.raw_text = safeGetText(container);
                     
-                    // Aria labels (contain reaction/comment/share counts)
                     const ariaLabels = [];
                     container.querySelectorAll('[aria-label]').forEach(el => {
                         const label = el.getAttribute('aria-label');
@@ -386,26 +180,21 @@ class FacebookPageScraper(FacebookBaseScraper):
                     });
                     post.aria_labels = ariaLabels;
 
-                    // Post date
                     const timeEl = container.querySelector('abbr[data-utime], time, span[id*="jsc_c"]');
                     if (timeEl) {
                         post.post_date_raw = safeGetText(timeEl) || timeEl.getAttribute('title') || timeEl.getAttribute('datetime') || "";
                     }
 
-                    // Thumbnail - find images WITHIN this article only
-                    // Filter out profile pics (small), emojis, and reaction icons
                     const imgs = Array.from(container.querySelectorAll('img[src*="fbcdn"]')).filter(img => {
                         const src = img.src || "";
                         if (src.includes('emoji')) return false;
-                        if (src.includes('rsrc.php')) return false; // UI icons
-                        // Check if image is reasonably sized (not a tiny icon)
+                        if (src.includes('rsrc.php')) return false;
                         const w = img.width || img.naturalWidth || 0;
                         const h = img.height || img.naturalHeight || 0;
                         return w > 50 || h > 50;
                     });
                     
                     if (imgs.length > 0) {
-                        // Sort by size, pick largest (most likely the post image)
                         imgs.sort((a, b) => {
                             const aSize = (a.naturalWidth || a.width || 0) * (a.naturalHeight || a.height || 0);
                             const bSize = (b.naturalWidth || b.width || 0) * (b.naturalHeight || b.height || 0);
@@ -414,7 +203,6 @@ class FacebookPageScraper(FacebookBaseScraper):
                         post.thumbnail = imgs[0].src;
                     }
 
-                    // Type detection
                     if (postUrl.includes('/reel/') || postUrl.includes('/videos/') || postUrl.includes('/watch/')) {
                         post.type = 'video';
                     } else {
@@ -437,43 +225,180 @@ class FacebookPageScraper(FacebookBaseScraper):
                     page_info: pageInfo,
                     _extraction_debug: debugInfo
                 };
-            }""")
+            }"""
 
-            # ---- PROCESS EXTRACTED POSTS IN PYTHON ----
-            raw_result = posts 
-            extracted_posts = raw_result.get("posts", [])
-            total_candidates = raw_result.get("total_candidates", 0)
-            extraction_debug = raw_result.get("_extraction_debug", {})
-            page_info = raw_result.get("page_info", {})
-            self.logger.info(f"JS Search found {total_candidates} candidates and {len(extracted_posts)} formatted posts.")
-            self.logger.info(f"Extraction diagnostics: {extraction_debug}")
-            self.logger.info(f"Page info: {page_info}")
-            scraped_data["_debug"]["extraction_debug"] = extraction_debug
-            scraped_data["page_info"] = page_info
+    async def _scroll_page(self, count=10, on_scroll=None):
+        """Scroll multiple times to load more posts. Uses progressive delays and
+        multiple stale-height retries before giving up."""
+        if not self.page:
+            return
+        
+        get_height_js = "() => (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight"
+        
+        try:
+            last_height = await self.page.evaluate(get_height_js)
+        except Exception:
+            last_height = 0
+
+        stale_count = 0
+        for i in range(count):
+            self.logger.info(f"Scrolling ({i+1}/{count})... current height={last_height}")
+            try:
+                # Scroll to bottom
+                scroll_to_js = "window.scrollTo(0, (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight)"
+                await self.page.evaluate(scroll_to_js)
+                
+                # Wait for new content to load
+                base_wait = 3.5 if i < 5 else 4.5
+                await asyncio.sleep(base_wait)
+                
+                # OPTIONAL: Run callback (e.g. for incremental extraction)
+                if on_scroll:
+                    try:
+                        await on_scroll(i, count)
+                    except Exception as cb_err:
+                        self.logger.warning(f"On-scroll callback failed: {cb_err}")
+
+                new_height = await self.page.evaluate(get_height_js)
+                if new_height == last_height or new_height == 0:
+                    stale_count += 1
+                    self.logger.info(f"Height stale (attempt {stale_count}/4), waiting extra...")
+                    await asyncio.sleep(2.0 + stale_count)
+                    await self.page.evaluate("window.scrollBy(0, -300)")
+                    await asyncio.sleep(1.0)
+                    await self.page.evaluate(scroll_to_js)
+                    await asyncio.sleep(2.0)
+                    new_height = await self.page.evaluate(get_height_js)
+                    if new_height == last_height:
+                        if stale_count >= 4:
+                            self.logger.info("Height unchanged after 4 retries, stopping scroll.")
+                            break
+                        continue
+                    else:
+                        self.logger.info(f"Scroll trick worked! New height: {new_height}")
+                        stale_count = 0
+                else:
+                    stale_count = 0
+                
+                last_height = new_height
+            except Exception as e:
+                self.logger.warning(f"Scroll step {i+1} failed: {e}")
+                break
+
+    async def run(self, url: str, **kwargs) -> Dict[str, Any]:
+        self.logger.info(f"Running FacebookPageScraper for {url}")
+
+        scroll_count: int = kwargs.get("scroll_count", 10)
+        extra_wait: float = kwargs.get("extra_wait_seconds", 3.0)
+        dump_all: bool = kwargs.get("dump_all", False)
+
+        scraped_data: Dict[str, Any] = {
+            "task_id": self.task_id,
+            "requested_url": url,
+            "scraped_at": datetime.utcnow().isoformat(),
+            "content_type": "page_feed",
+            "version": "1.5.1-FEED-FIX",
+            "page_info": {},
+            "posts": [],
+            "total_posts_found": 0,
+            "_debug": {}
+        }
+
+        if not self.page:
+            return self.format_error("Browser not initialized", data=scraped_data)
+
+        try:
+            await self.inject_cookies()
+            self.logger.info(f"Navigating to Page: {url}")
+            
+            page_loaded = False
+            for attempt in range(3):
+                try:
+                    if attempt == 0:
+                        await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
+                    elif attempt == 1:
+                        await self.page.reload(wait_until="domcontentloaded", timeout=45000)
+                    else:
+                        await self.page.goto(url, wait_until="load", timeout=60000)
+                    
+                    await asyncio.sleep(3.0)
+                    content_length = await self.page.evaluate("() => document.body ? document.body.innerHTML.length : 0")
+                    current_url = self.page.url or ""
+                    if "login" in current_url.lower() or "checkpoint" in current_url.lower():
+                        break
+                    if content_length > 5000:
+                        page_loaded = True
+                        break
+                    await asyncio.sleep(3.0)
+                except Exception as nav_err:
+                    self.logger.warning(f"Navigation attempt {attempt+1} error: {nav_err}")
+                    await asyncio.sleep(2.0)
+
+            if not page_loaded:
+                return self.format_error("Page loading failed or blocked.", data=scraped_data)
+            
+            await self.dismiss_login_banner()
+            await asyncio.sleep(max(extra_wait, 5.0))
+            
+            restriction_msg = await self.check_restricted()
+            if restriction_msg:
+                return self.format_error(restriction_msg, data=scraped_data)
+
+            # ---- SCROLL TO LOAD DATA (WITH INCREMENTAL EXTRACTION) ----
+            extraction_js = self._get_extraction_js()
+            all_raw_posts = []
+            final_page_info = {}
+            final_extraction_debug = {}
+
+            async def on_scroll_callback(current_idx, total_idx):
+                self.logger.info(f"Incremental extraction at scroll {current_idx+1}/{total_idx}...")
+                try:
+                    res = await self.page.evaluate(extraction_js)
+                    batch = res.get("posts", [])
+                    if batch:
+                        self.logger.info(f"Found {len(batch)} posts in this scroll.")
+                        all_raw_posts.extend(batch)
+                    
+                    p_info = res.get("page_info", {})
+                    if p_info and not final_page_info.get("name"):
+                        final_page_info.update(p_info)
+                    final_extraction_debug.update(res.get("_extraction_debug", {}))
+                except Exception as ex:
+                    self.logger.warning(f"Incremental extraction failed at scroll {current_idx+1}: {ex}")
+
+            await self._scroll_page(scroll_count, on_scroll=on_scroll_callback)
+
+            # Final extraction
+            self.logger.info("Performing final extraction...")
+            final_res = await self.page.evaluate(extraction_js)
+            all_raw_posts.extend(final_res.get("posts", []))
+            if not final_page_info.get("name"):
+                final_page_info.update(final_res.get("page_info", {}))
+            final_extraction_debug.update(final_res.get("_extraction_debug", {}))
+
+            # ---- PROCESS ACCUMULATED POSTS ----
+            self.logger.info(f"Accumulated {len(all_raw_posts)} raw posts. Deduplicating and processing...")
+            
+            scraped_data["page_info"] = final_page_info
+            scraped_data["_debug"]["extraction_debug"] = final_extraction_debug
             
             processed_posts = []
             seen_ids = set()
 
-            for p in extracted_posts:
+            for p in all_raw_posts:
                 post_url = p.get("url")
                 post_id = p.get("id")
                 if not post_url:
                     continue
-                
-                # Skip comment links
                 if "comment_id=" in post_url:
                     continue
                 
-                # Deduplicate by ID (same post can have multiple URL variants)
                 dedup_key = post_id or post_url
                 if dedup_key in seen_ids:
                     continue
                 seen_ids.add(dedup_key)
 
-                # Use existing utility functions to parse metrics
                 combined_text = (p.get("raw_text", "") + " " + " ".join(p.get("aria_labels", []))).lower()
-                
-                views_val = _extract_views_count_from_text(combined_text)
                 
                 metrics = {
                     "url": post_url,
@@ -485,30 +410,24 @@ class FacebookPageScraper(FacebookBaseScraper):
                     "reactions": _extract_reactions_count_from_text(combined_text),
                     "comments": _extract_comments_count_from_text(combined_text),
                     "shares": _extract_shares_count_from_text(combined_text),
-                    "views": views_val,
+                    "views": _extract_views_count_from_text(combined_text),
                 }
 
-                # Normalize counts
                 for k in ["reactions", "comments", "shares", "views"]:
                     val = metrics.get(k)
-                    if val:
-                        metrics[f"{k}_count"] = _normalize_count(str(val))
-                    else:
-                        metrics[f"{k}_count"] = 0
+                    metrics[f"{k}_count"] = _normalize_count(str(val)) if val else 0
 
                 processed_posts.append(metrics)
 
             scraped_data["posts"] = processed_posts
             scraped_data["total_posts_found"] = len(processed_posts)
-            scraped_data["_debug"]["total_candidates"] = total_candidates
             
             if dump_all:
                 scraped_data["_debug"]["full_html"] = await self.page.content()
 
             if len(processed_posts) == 0:
-                self.logger.warning(f"No posts found for {url}. Dumping HTML to _debug.")
                 scraped_data["_debug"]["full_html"] = await self.page.content()
-                return self.format_error(f"No posts found on the page. HTML size: {len(scraped_data['_debug']['full_html'])} bytes.", data=scraped_data)
+                return self.format_error("No posts found on the page.", data=scraped_data)
 
             self.logger.info(f"Page extraction successful. Found {len(processed_posts)} unique items.")
 
@@ -522,13 +441,4 @@ class FacebookPageScraper(FacebookBaseScraper):
 
         except Exception as e:
             self.logger.error(f"FacebookPageScraper failed: {str(e)}", exc_info=True)
-            try:
-                html = await self.page.content()
-                from pathlib import Path
-                dump_path = Path("docs") / f"last_failed_scrape_{self.task_id}.html"
-                dump_path.parent.mkdir(exist_ok=True)
-                dump_path.write_text(html, encoding="utf-8")
-                self.logger.info(f"Raw HTML dumped to {dump_path}")
-            except:
-                pass
             return self.format_error(str(e), data=scraped_data)
