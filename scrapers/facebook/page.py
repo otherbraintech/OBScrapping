@@ -228,12 +228,15 @@ class FacebookPageScraper(FacebookBaseScraper):
             }"""
 
     async def _scroll_page(self, count=10, on_scroll=None):
-        """Scroll multiple times to load more posts. Uses progressive delays and
-        multiple stale-height retries before giving up."""
+        """Scroll gradually to load more posts. Uses viewport-height increments
+        to properly trigger Facebook's intersection-observer lazy loading."""
         if not self.page:
             return
         
         get_height_js = "() => (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight"
+        get_scroll_pos_js = "() => window.scrollY || window.pageYOffset || 0"
+        # Scroll by ~1.5 viewport heights each step (gradual, not jump-to-bottom)
+        scroll_by_js = "window.scrollBy({ top: Math.floor(window.innerHeight * 1.5), behavior: 'smooth' })"
         
         try:
             last_height = await self.page.evaluate(get_height_js)
@@ -242,17 +245,46 @@ class FacebookPageScraper(FacebookBaseScraper):
 
         stale_count = 0
         for i in range(count):
-            self.logger.info(f"Scrolling ({i+1}/{count})... current height={last_height}")
+            scroll_pos = await self.page.evaluate(get_scroll_pos_js)
+            self.logger.info(f"Scrolling ({i+1}/{count})... scrollY={scroll_pos}, docHeight={last_height}")
             try:
-                # Scroll to bottom
-                scroll_to_js = "window.scrollTo(0, (document.scrollingElement || document.body || document.documentElement || {scrollHeight: 0}).scrollHeight)"
-                await self.page.evaluate(scroll_to_js)
+                # Gradual scroll (NOT jump to bottom)
+                await self.page.evaluate(scroll_by_js)
                 
-                # Wait for new content to load
-                base_wait = 3.5 if i < 5 else 4.5
+                # Wait for new content to render
+                base_wait = 3.0 if i < 5 else 4.0
                 await asyncio.sleep(base_wait)
                 
-                # OPTIONAL: Run callback (e.g. for incremental extraction)
+                # Try to click "See more" / "Ver más" buttons that Facebook uses
+                try:
+                    see_more_js = r"""() => {
+                        const btns = document.querySelectorAll(
+                            'div[role="button"], span[role="button"], a[role="button"]'
+                        );
+                        for (const btn of btns) {
+                            const txt = (btn.innerText || '').trim().toLowerCase();
+                            if (txt === 'ver más' || txt === 'see more' || 
+                                txt === 'ver más publicaciones' || txt === 'see more posts') {
+                                btn.click();
+                                return true;
+                            }
+                        }
+                        return false;
+                    }"""
+                    clicked = await self.page.evaluate(see_more_js)
+                    if clicked:
+                        self.logger.info("Clicked 'See more' button, waiting for content...")
+                        await asyncio.sleep(3.0)
+                except Exception:
+                    pass
+
+                # Wait for any pending network requests to settle
+                try:
+                    await self.page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+
+                # Run callback for incremental extraction
                 if on_scroll:
                     try:
                         await on_scroll(i, count)
@@ -262,20 +294,25 @@ class FacebookPageScraper(FacebookBaseScraper):
                 new_height = await self.page.evaluate(get_height_js)
                 if new_height == last_height or new_height == 0:
                     stale_count += 1
-                    self.logger.info(f"Height stale (attempt {stale_count}/4), waiting extra...")
+                    self.logger.info(f"Height stale (attempt {stale_count}/5), trying recovery...")
+                    
+                    # Recovery: scroll to absolute bottom, wait, then do a small bounce
+                    scroll_to_bottom = "window.scrollTo(0, document.documentElement.scrollHeight)"
+                    await self.page.evaluate(scroll_to_bottom)
                     await asyncio.sleep(2.0 + stale_count)
-                    await self.page.evaluate("window.scrollBy(0, -300)")
-                    await asyncio.sleep(1.0)
-                    await self.page.evaluate(scroll_to_js)
-                    await asyncio.sleep(2.0)
+                    await self.page.evaluate("window.scrollBy(0, -500)")
+                    await asyncio.sleep(1.5)
+                    await self.page.evaluate(scroll_by_js)
+                    await asyncio.sleep(3.0)
+                    
                     new_height = await self.page.evaluate(get_height_js)
                     if new_height == last_height:
-                        if stale_count >= 4:
-                            self.logger.info("Height unchanged after 4 retries, stopping scroll.")
+                        if stale_count >= 5:
+                            self.logger.info("Height unchanged after 5 retries, stopping scroll.")
                             break
                         continue
                     else:
-                        self.logger.info(f"Scroll trick worked! New height: {new_height}")
+                        self.logger.info(f"Recovery scroll worked! New height: {new_height}")
                         stale_count = 0
                 else:
                     stale_count = 0
@@ -297,7 +334,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             "requested_url": url,
             "scraped_at": datetime.utcnow().isoformat(),
             "content_type": "page_feed",
-            "version": "1.5.1-FEED-FIX",
+            "version": "1.6.0-GRADUAL-SCROLL",
             "page_info": {},
             "posts": [],
             "total_posts_found": 0,
@@ -350,6 +387,20 @@ class FacebookPageScraper(FacebookBaseScraper):
             final_page_info = {}
             final_extraction_debug = {}
 
+            # ---- INITIAL EXTRACTION (before any scrolling) ----
+            self.logger.info("Performing initial extraction before scrolling...")
+            try:
+                init_res = await self.page.evaluate(extraction_js)
+                init_batch = init_res.get("posts", [])
+                self.logger.info(f"Initial extraction found {len(init_batch)} posts before scrolling.")
+                all_raw_posts.extend(init_batch)
+                p_info = init_res.get("page_info", {})
+                if p_info:
+                    final_page_info.update(p_info)
+                final_extraction_debug.update(init_res.get("_extraction_debug", {}))
+            except Exception as ex:
+                self.logger.warning(f"Initial extraction failed: {ex}")
+
             async def on_scroll_callback(current_idx, total_idx):
                 self.logger.info(f"Incremental extraction at scroll {current_idx+1}/{total_idx}...")
                 try:
@@ -377,7 +428,7 @@ class FacebookPageScraper(FacebookBaseScraper):
             final_extraction_debug.update(final_res.get("_extraction_debug", {}))
 
             # ---- PROCESS ACCUMULATED POSTS ----
-            self.logger.info(f"Accumulated {len(all_raw_posts)} raw posts. Deduplicating and processing...")
+            self.logger.info(f"Accumulated {len(all_raw_posts)} raw post entries. Deduplicating...")
             
             scraped_data["page_info"] = final_page_info
             scraped_data["_debug"]["extraction_debug"] = final_extraction_debug
